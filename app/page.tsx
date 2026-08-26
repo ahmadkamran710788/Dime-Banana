@@ -13,7 +13,7 @@ type UploadedImage = {
 };
 
 const MAX_IMAGES = 6;
-
+//okok
 const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
   "nano-banana-pro": {
     label: "Nano Banana Pro",
@@ -37,19 +37,28 @@ const MAX_DIMENSION = 1536;
 const JPEG_QUALITY = 0.85;
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
-function compressImage(file: File): Promise<{ data: string; mimeType: string; previewUrl: string }> {
+function compressImage(
+  file: File,
+): Promise<{ data: string; mimeType: string; previewUrl: string }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const scale = Math.min(1, MAX_DIMENSION / Math.max(img.width, img.height));
+      const scale = Math.min(
+        1,
+        MAX_DIMENSION / Math.max(img.width, img.height),
+      );
       // Small files that need no resizing are sent as-is
       if (scale === 1 && file.size <= 700 * 1024) {
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
-          resolve({ data: dataUrl.split(",")[1], mimeType: file.type, previewUrl: dataUrl });
+          resolve({
+            data: dataUrl.split(",")[1],
+            mimeType: file.type,
+            previewUrl: dataUrl,
+          });
         };
         reader.onerror = () => reject(new Error("Could not read file."));
         reader.readAsDataURL(file);
@@ -59,10 +68,15 @@ function compressImage(file: File): Promise<{ data: string; mimeType: string; pr
       canvas.width = Math.round(img.width * scale);
       canvas.height = Math.round(img.height * scale);
       const ctx = canvas.getContext("2d");
-      if (!ctx) return reject(new Error("Canvas is not supported in this browser."));
+      if (!ctx)
+        return reject(new Error("Canvas is not supported in this browser."));
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
-      resolve({ data: dataUrl.split(",")[1], mimeType: "image/jpeg", previewUrl: dataUrl });
+      resolve({
+        data: dataUrl.split(",")[1],
+        mimeType: "image/jpeg",
+        previewUrl: dataUrl,
+      });
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -79,7 +93,9 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ src: string; mime: string } | null>(null);
+  const [result, setResult] = useState<{ src: string; mime: string } | null>(
+    null,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadFiles = (files: FileList | File[]) => {
@@ -102,14 +118,22 @@ export default function Home() {
               ? prev
               : [
                   ...prev,
-                  { id: `img-${nextId++}`, data, mimeType, previewUrl, name: file.name },
-                ]
+                  {
+                    id: `img-${nextId++}`,
+                    data,
+                    mimeType,
+                    previewUrl,
+                    name: file.name,
+                  },
+                ],
           );
         })
         .catch((err) => setError(err.message || "Could not process image."));
     });
     if (list.length > room) {
-      setError(`Only the first ${room} image(s) were added — max ${MAX_IMAGES} total.`);
+      setError(
+        `Only the first ${room} image(s) were added — max ${MAX_IMAGES} total.`,
+      );
     }
   };
 
@@ -126,7 +150,7 @@ export default function Home() {
     });
     if (body.length > MAX_PAYLOAD_BYTES) {
       setError(
-        `Your images total ${(body.length / 1024 / 1024).toFixed(1)} MB — the upload limit is 4 MB. Please remove an image or two.`
+        `Your images total ${(body.length / 1024 / 1024).toFixed(1)} MB — the upload limit is 4 MB. Please remove an image or two.`,
       );
       return;
     }
@@ -147,10 +171,16 @@ export default function Home() {
       }
       if (!res.ok) {
         if (res.status === 413)
-          throw new Error("Upload too large — please remove an image or two and try again.");
+          throw new Error(
+            "Upload too large — please remove an image or two and try again.",
+          );
         if (res.status === 429)
-          throw new Error("Rate limit reached — please wait a moment and try again.");
-        throw new Error(data?.error || `Generation failed (HTTP ${res.status}).`);
+          throw new Error(
+            "Rate limit reached — please wait a moment and try again.",
+          );
+        throw new Error(
+          data?.error || `Generation failed (HTTP ${res.status}).`,
+        );
       }
       setResult({
         src: `data:${data.mimeType};base64,${data.image}`,
@@ -238,7 +268,8 @@ export default function Home() {
               onDrop={(e) => {
                 e.preventDefault();
                 setDragging(false);
-                if (e.dataTransfer.files?.length) loadFiles(e.dataTransfer.files);
+                if (e.dataTransfer.files?.length)
+                  loadFiles(e.dataTransfer.files);
               }}
             >
               <div className="dz-inner">
@@ -274,15 +305,19 @@ export default function Home() {
               images.length > 1
                 ? "Describe how to combine these images… e.g. “Put the subject of the first image into the scene of the second”"
                 : images.length === 1
-                ? "Describe how to transform this image… e.g. “Turn this into a watercolor painting at sunset”"
-                : "Describe the image you want… e.g. “A cozy cabin in a snowy forest, golden hour, cinematic”"
+                  ? "Describe how to transform this image… e.g. “Turn this into a watercolor painting at sunset”"
+                  : "Describe the image you want… e.g. “A cozy cabin in a snowy forest, golden hour, cinematic”"
             }
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate();
             }}
           />
 
-          <button className="generate" onClick={generate} disabled={loading || !prompt.trim()}>
+          <button
+            className="generate"
+            onClick={generate}
+            disabled={loading || !prompt.trim()}
+          >
             {loading ? "Generating…" : "✦ Generate"}
           </button>
 
