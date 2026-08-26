@@ -2,10 +2,87 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 120;
 
-const MODELS: Record<string, string> = {
+type ImageInput = { data: string; mimeType: string };
+
+const GEMINI_MODELS: Record<string, string> = {
   "nano-banana-pro": "gemini-3-pro-image-preview",
   "nano-banana-2": "gemini-3.1-flash-image",
 };
+
+async function generateGemini(modelId: string, prompt: string, images: ImageInput[]) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { error: "Server is missing GEMINI_API_KEY.", status: 500 };
+
+  const parts: object[] = images.map((img) => ({
+    inline_data: { mime_type: img.mimeType, data: img.data },
+  }));
+  parts.push({ text: prompt });
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts }] }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) return { error: data?.error?.message || "Generation failed.", status: res.status };
+
+  const outParts = data?.candidates?.[0]?.content?.parts ?? [];
+  const imagePart = outParts.find((p: any) => p.inlineData?.data);
+  const textPart = outParts.find((p: any) => typeof p.text === "string");
+  if (!imagePart) return { error: textPart?.text || "The model returned no image.", status: 502 };
+
+  return {
+    image: imagePart.inlineData.data,
+    mimeType: imagePart.inlineData.mimeType || "image/png",
+  };
+}
+
+async function generateOpenAI(prompt: string, images: ImageInput[]) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return { error: "Server is missing OPENAI_API_KEY.", status: 500 };
+
+  let res: Response;
+  if (images.length === 0) {
+    res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      // JPEG output keeps the response under Vercel's 4.5 MB limit (PNGs can exceed it)
+      body: JSON.stringify({
+        model: "gpt-image-2",
+        prompt,
+        size: "auto",
+        output_format: "jpeg",
+        output_compression: 90,
+      }),
+    });
+  } else {
+    const form = new FormData();
+    form.append("model", "gpt-image-2");
+    form.append("prompt", prompt);
+    form.append("output_format", "jpeg");
+    form.append("output_compression", "90");
+    images.forEach((img, i) => {
+      const bytes = Buffer.from(img.data, "base64");
+      const ext = img.mimeType.includes("png") ? "png" : img.mimeType.includes("webp") ? "webp" : "jpg";
+      form.append("image[]", new Blob([bytes], { type: img.mimeType }), `input-${i}.${ext}`);
+    });
+    res = await fetch("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+  }
+
+  const data = await res.json();
+  if (!res.ok) return { error: data?.error?.message || "Generation failed.", status: res.status };
+
+  const b64 = data?.data?.[0]?.b64_json;
+  if (!b64) return { error: "The model returned no image.", status: 502 };
+  return { image: b64, mimeType: "image/jpeg" };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,58 +92,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "A prompt is required." }, { status: 400 });
     }
 
-    const modelId = MODELS[model];
-    if (!modelId) {
+    const imageList: ImageInput[] = Array.isArray(images)
+      ? images.filter((img: any) => img?.data && img?.mimeType)
+      : [];
+
+    let result;
+    if (model === "gpt-image-2") {
+      result = await generateOpenAI(prompt, imageList);
+    } else if (GEMINI_MODELS[model]) {
+      result = await generateGemini(GEMINI_MODELS[model], prompt, imageList);
+    } else {
       return NextResponse.json({ error: "Unknown model." }, { status: 400 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: "Server is missing GEMINI_API_KEY." }, { status: 500 });
+    if ("error" in result && result.error) {
+      return NextResponse.json({ error: result.error }, { status: result.status || 500 });
     }
-
-    const parts: object[] = [];
-    if (Array.isArray(images)) {
-      for (const img of images) {
-        if (img?.data && img?.mimeType) {
-          parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } });
-        }
-      }
-    }
-    parts.push({ text: prompt });
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts }] }),
-      }
-    );
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      const message = data?.error?.message || "Generation failed.";
-      return NextResponse.json({ error: message }, { status: res.status });
-    }
-
-    const outParts = data?.candidates?.[0]?.content?.parts ?? [];
-    const imagePart = outParts.find((p: any) => p.inlineData?.data);
-    const textPart = outParts.find((p: any) => typeof p.text === "string");
-
-    if (!imagePart) {
-      return NextResponse.json(
-        { error: textPart?.text || "The model returned no image." },
-        { status: 502 }
-      );
-    }
-
-    return NextResponse.json({
-      image: imagePart.inlineData.data,
-      mimeType: imagePart.inlineData.mimeType || "image/png",
-      text: textPart?.text ?? null,
-    });
+    return NextResponse.json({ image: result.image, mimeType: result.mimeType });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unexpected server error." }, { status: 500 });
   }

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 
-type ModelKey = "nano-banana-pro" | "nano-banana-2";
+type ModelKey = "nano-banana-pro" | "nano-banana-2" | "gpt-image-2";
 
 type UploadedImage = {
   id: string;
@@ -22,6 +22,10 @@ const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
   "nano-banana-2": {
     label: "Nano Banana 2",
     blurb: "Fast and efficient — great for quick generations",
+  },
+  "gpt-image-2": {
+    label: "GPT Image 2",
+    blurb: "OpenAI's image model — strong text rendering and precise edits",
   },
 };
 
