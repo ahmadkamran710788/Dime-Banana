@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { uploadResultImage, uploadInputImage } from "@/lib/s3";
+import { uploadResultImage, uploadInputImage, imageUrl } from "@/lib/s3";
 
 export const maxDuration = 120;
 
@@ -11,7 +11,12 @@ const GEMINI_MODELS: Record<string, string> = {
   "nano-banana-2": "gemini-3.1-flash-image",
 };
 
-async function generateGemini(modelId: string, prompt: string, images: ImageInput[]) {
+async function generateGemini(
+  modelId: string,
+  prompt: string,
+  images: ImageInput[],
+  resolution: string
+) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { error: "Server is missing GEMINI_API_KEY.", status: 500 };
 
@@ -20,12 +25,17 @@ async function generateGemini(modelId: string, prompt: string, images: ImageInpu
   }));
   parts.push({ text: prompt });
 
+  const body: Record<string, unknown> = { contents: [{ parts }] };
+  if (resolution === "2K" || resolution === "4K") {
+    body.generationConfig = { imageConfig: { imageSize: resolution } };
+  }
+
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts }] }),
+      body: JSON.stringify(body),
     }
   );
   const data = await res.json();
@@ -88,7 +98,7 @@ async function generateOpenAI(prompt: string, images: ImageInput[]) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, model, images } = await req.json();
+    const { prompt, model, images, resolution } = await req.json();
 
     if (!prompt || typeof prompt !== "string") {
       return NextResponse.json({ error: "A prompt is required." }, { status: 400 });
@@ -102,7 +112,7 @@ export async function POST(req: NextRequest) {
     if (model === "gpt-image-2") {
       result = await generateOpenAI(prompt, imageList);
     } else if (GEMINI_MODELS[model]) {
-      result = await generateGemini(GEMINI_MODELS[model], prompt, imageList);
+      result = await generateGemini(GEMINI_MODELS[model], prompt, imageList, resolution);
     } else {
       return NextResponse.json({ error: "Unknown model." }, { status: 400 });
     }
@@ -112,24 +122,38 @@ export async function POST(req: NextRequest) {
     }
 
     // Record in history (S3 + DB). Never fail the generation over a history hiccup.
+    let historyId: string | null = null;
+    let resultKey: string | null = null;
     try {
-      const [resultKey, inputKeys] = await Promise.all([
+      const [key, inputKeys] = await Promise.all([
         uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!),
         Promise.all(
           imageList.map((img) => uploadInputImage(Buffer.from(img.data, "base64"), img.mimeType))
         ),
       ]);
-      await db.query(
+      resultKey = key;
+      const { rows } = await db.query(
         `INSERT INTO "NanoBananaHistory"
            ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys")
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [prompt, model, resultKey, result.mimeType, imageList.length, inputKeys]
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING "id"`,
+        [prompt, model, key, result.mimeType, imageList.length, inputKeys]
       );
+      historyId = rows[0]?.id ?? null;
     } catch (histErr) {
       console.error("history save failed:", histErr);
     }
 
-    return NextResponse.json({ image: result.image, mimeType: result.mimeType });
+    // Vercel caps responses at 4.5 MB — 2K/4K results are far bigger than that
+    // as base64, so large images are returned as a presigned S3 URL instead.
+    if (result.image!.length > 3_000_000 && resultKey) {
+      return NextResponse.json({
+        url: await imageUrl(resultKey),
+        mimeType: result.mimeType,
+        id: historyId,
+      });
+    }
+    return NextResponse.json({ image: result.image, mimeType: result.mimeType, id: historyId });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unexpected server error." }, { status: 500 });
   }
