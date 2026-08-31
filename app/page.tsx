@@ -10,6 +10,7 @@ type HistoryItem = {
   model: string;
   mimeType: string;
   inputImageCount: number;
+  resolution: string | null;
   createdAt: string;
   url: string;
   inputUrls: string[];
@@ -178,6 +179,9 @@ export default function Home() {
   const reuseHistoryItem = (item: HistoryItem) => {
     setPrompt(item.prompt);
     if (item.model in MODEL_INFO) setModel(item.model as ModelKey);
+    if (item.resolution === "1K" || item.resolution === "2K" || item.resolution === "4K") {
+      setResolution(item.resolution);
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -550,6 +554,9 @@ export default function Home() {
                     <span className="history-model">
                       {MODEL_INFO[item.model as ModelKey]?.label ?? item.model}
                     </span>
+                    {item.resolution && (
+                      <span className="history-res">{item.resolution}</span>
+                    )}
                     <span>
                       {item.inputImageCount > 0
                         ? `${item.inputImageCount} input img`
@@ -598,6 +605,9 @@ export default function Home() {
                 {MODEL_INFO[selected.model as ModelKey]?.label ??
                   selected.model}
               </span>
+              {selected.resolution && (
+                <span className="modal-res">{selected.resolution}</span>
+              )}
               <span className="modal-date">
                 {new Date(selected.createdAt).toLocaleString(undefined, {
                   year: "numeric",

@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const { rows } = await db.query(
       `SELECT "id", "prompt", "model", "imageKey", "mimeType", "inputImageCount",
-              "inputImageKeys", "createdAt"
+              "inputImageKeys", "resolution", "createdAt"
        FROM "NanoBananaHistory"
        ORDER BY "createdAt" DESC
        LIMIT 30`
@@ -20,6 +20,7 @@ export async function GET() {
         model: r.model,
         mimeType: r.mimeType,
         inputImageCount: r.inputImageCount,
+        resolution: r.resolution,
         createdAt: r.createdAt,
         url: await imageUrl(r.imageKey),
         inputUrls: await Promise.all(
