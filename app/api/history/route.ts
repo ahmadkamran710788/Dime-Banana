@@ -7,7 +7,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const { rows } = await db.query(
-      `SELECT "id", "prompt", "model", "imageKey", "mimeType", "inputImageCount", "createdAt"
+      `SELECT "id", "prompt", "model", "imageKey", "mimeType", "inputImageCount",
+              "inputImageKeys", "createdAt"
        FROM "NanoBananaHistory"
        ORDER BY "createdAt" DESC
        LIMIT 30`
@@ -21,6 +22,9 @@ export async function GET() {
         inputImageCount: r.inputImageCount,
         createdAt: r.createdAt,
         url: await imageUrl(r.imageKey),
+        inputUrls: await Promise.all(
+          (r.inputImageKeys ?? []).map((k: string) => imageUrl(k))
+        ),
       }))
     );
     return NextResponse.json({ items });
@@ -35,14 +39,17 @@ export async function DELETE(req: NextRequest) {
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
     const { rows } = await db.query(
-      `DELETE FROM "NanoBananaHistory" WHERE "id" = $1 RETURNING "imageKey"`,
+      `DELETE FROM "NanoBananaHistory" WHERE "id" = $1 RETURNING "imageKey", "inputImageKeys"`,
       [id]
     );
-    if (rows[0]?.imageKey) {
-      try {
-        await deleteImage(rows[0].imageKey);
-      } catch (s3Err) {
-        console.error("s3 delete failed:", s3Err);
+    if (rows[0]) {
+      const keys = [rows[0].imageKey, ...(rows[0].inputImageKeys ?? [])].filter(Boolean);
+      for (const key of keys) {
+        try {
+          await deleteImage(key);
+        } catch (s3Err) {
+          console.error("s3 delete failed:", s3Err);
+        }
       }
     }
     return NextResponse.json({ ok: true });

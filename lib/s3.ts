@@ -12,16 +12,26 @@ export const s3 = new S3Client({
   },
 });
 
-// App-specific folder so keys never collide with the main app's uploads.
-const FOLDER = "nano-banana/results";
+// App-specific folders so keys never collide with the main app's uploads.
+const APP_PREFIX = "nano-banana/";
+const RESULTS_FOLDER = `${APP_PREFIX}results`;
+const INPUTS_FOLDER = `${APP_PREFIX}inputs`;
 
-export async function uploadResultImage(buffer: Buffer, contentType: string): Promise<string> {
+async function upload(folder: string, buffer: Buffer, contentType: string): Promise<string> {
   const ext = contentType.split("/")[1] || "bin";
-  const key = `${FOLDER}/${uuidv4()}.${ext}`;
+  const key = `${folder}/${uuidv4()}.${ext}`;
   await s3.send(
     new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: buffer, ContentType: contentType })
   );
   return key;
+}
+
+export function uploadResultImage(buffer: Buffer, contentType: string): Promise<string> {
+  return upload(RESULTS_FOLDER, buffer, contentType);
+}
+
+export function uploadInputImage(buffer: Buffer, contentType: string): Promise<string> {
+  return upload(INPUTS_FOLDER, buffer, contentType);
 }
 
 // Presigned GET for rendering — 1 hour, same as the main app.
@@ -32,7 +42,7 @@ export async function imageUrl(key: string): Promise<string> {
 }
 
 export async function deleteImage(key: string): Promise<void> {
-  // Only ever delete inside our own folder — never touch the main app's objects.
-  if (!key.startsWith(`${FOLDER}/`)) throw new Error("Refusing to delete outside app folder.");
+  // Only ever delete inside our own folders — never touch the main app's objects.
+  if (!key.startsWith(APP_PREFIX)) throw new Error("Refusing to delete outside app folder.");
   await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 }

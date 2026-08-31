@@ -12,6 +12,7 @@ type HistoryItem = {
   inputImageCount: number;
   createdAt: string;
   url: string;
+  inputUrls: string[];
 };
 
 type UploadedImage = {
@@ -40,6 +41,32 @@ const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
 };
 
 let nextId = 0;
+
+// Image with a shimmer placeholder while the (presigned S3) URL loads
+function LoadedImg({
+  src,
+  alt,
+  className,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <span className={`imgwrap ${loaded ? "loaded" : ""}`}>
+      {!loaded && <span className="img-spinner" />}
+      <img
+        src={src}
+        alt={alt}
+        className={className}
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+        onError={() => setLoaded(true)}
+      />
+    </span>
+  );
+}
 
 // Vercel rejects request bodies over 4.5 MB, so images are downscaled
 // in the browser before upload to keep the JSON payload safely under it.
@@ -109,6 +136,16 @@ export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<HistoryItem | null>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
 
   const loadHistory = async () => {
     try {
@@ -431,8 +468,14 @@ export default function Home() {
           <div className="history-grid">
             {history.map((item) => (
               <div className="history-card" key={item.id}>
-                <a href={item.url} target="_blank" rel="noreferrer">
-                  <img src={item.url} alt={item.prompt} loading="lazy" />
+                <a
+                  href={item.url}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSelected(item);
+                  }}
+                >
+                  <LoadedImg src={item.url} alt={item.prompt} />
                 </a>
                 <div className="history-info">
                   <p className="history-prompt" title={item.prompt}>
@@ -460,9 +503,7 @@ export default function Home() {
                     <button onClick={() => reuseHistoryItem(item)}>
                       ↩ Reuse
                     </button>
-                    <a href={item.url} download target="_blank" rel="noreferrer">
-                      ⬇ Open
-                    </a>
+                    <button onClick={() => setSelected(item)}>👁 View</button>
                     <button
                       className="danger"
                       onClick={() => deleteHistoryItem(item.id)}
@@ -476,6 +517,86 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      {selected && (
+        <div className="modal-backdrop" onClick={() => setSelected(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSelected(null)}>
+              ✕
+            </button>
+
+            <div className="modal-meta">
+              <span className="modal-model">
+                {MODEL_INFO[selected.model as ModelKey]?.label ??
+                  selected.model}
+              </span>
+              <span className="modal-date">
+                {new Date(selected.createdAt).toLocaleString(undefined, {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </div>
+
+            <div className="modal-section-label">Prompt</div>
+            <p className="modal-prompt">{selected.prompt}</p>
+
+            {selected.inputUrls.length > 0 ? (
+              <>
+                <div className="modal-section-label">
+                  Input images ({selected.inputUrls.length})
+                </div>
+                <div className="modal-inputs">
+                  {selected.inputUrls.map((url, i) => (
+                    <a href={url} target="_blank" rel="noreferrer" key={i}>
+                      <LoadedImg src={url} alt={`Input ${i + 1}`} />
+                    </a>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="modal-section-label">
+                Text-to-image — no input images
+                {selected.inputImageCount > 0 &&
+                  ` (${selected.inputImageCount} used, not stored for this older entry)`}
+              </div>
+            )}
+
+            <div className="modal-section-label">Result</div>
+            <a href={selected.url} target="_blank" rel="noreferrer">
+              <LoadedImg
+                className="modal-result"
+                src={selected.url}
+                alt={selected.prompt}
+              />
+            </a>
+
+            <div className="modal-actions">
+              <a
+                className="action-btn"
+                href={selected.url}
+                download
+                target="_blank"
+                rel="noreferrer"
+              >
+                ⬇ Download result
+              </a>
+              <button
+                className="action-btn"
+                onClick={() => {
+                  reuseHistoryItem(selected);
+                  setSelected(null);
+                }}
+              >
+                ↩ Reuse prompt & model
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

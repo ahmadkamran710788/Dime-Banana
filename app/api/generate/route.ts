@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { uploadResultImage } from "@/lib/s3";
+import { uploadResultImage, uploadInputImage } from "@/lib/s3";
 
 export const maxDuration = 120;
 
@@ -113,11 +113,17 @@ export async function POST(req: NextRequest) {
 
     // Record in history (S3 + DB). Never fail the generation over a history hiccup.
     try {
-      const key = await uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!);
+      const [resultKey, inputKeys] = await Promise.all([
+        uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!),
+        Promise.all(
+          imageList.map((img) => uploadInputImage(Buffer.from(img.data, "base64"), img.mimeType))
+        ),
+      ]);
       await db.query(
-        `INSERT INTO "NanoBananaHistory" ("prompt", "model", "imageKey", "mimeType", "inputImageCount")
-         VALUES ($1, $2, $3, $4, $5)`,
-        [prompt, model, key, result.mimeType, imageList.length]
+        `INSERT INTO "NanoBananaHistory"
+           ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [prompt, model, resultKey, result.mimeType, imageList.length, inputKeys]
       );
     } catch (histErr) {
       console.error("history save failed:", histErr);

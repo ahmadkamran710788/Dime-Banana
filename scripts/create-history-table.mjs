@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS "NanoBananaHistory" (
 );
 CREATE INDEX IF NOT EXISTS "NanoBananaHistory_createdAt_idx"
   ON "NanoBananaHistory"("createdAt" DESC);
+ALTER TABLE "NanoBananaHistory"
+  ADD COLUMN IF NOT EXISTS "inputImageKeys" TEXT[] NOT NULL DEFAULT '{}';
 `;
 
 try {
