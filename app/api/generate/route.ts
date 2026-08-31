@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { uploadResultImage, uploadInputImage } from "@/lib/s3";
 
 export const maxDuration = 120;
 
@@ -108,6 +110,25 @@ export async function POST(req: NextRequest) {
     if ("error" in result && result.error) {
       return NextResponse.json({ error: result.error }, { status: result.status || 500 });
     }
+
+    // Record in history (S3 + DB). Never fail the generation over a history hiccup.
+    try {
+      const [resultKey, inputKeys] = await Promise.all([
+        uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!),
+        Promise.all(
+          imageList.map((img) => uploadInputImage(Buffer.from(img.data, "base64"), img.mimeType))
+        ),
+      ]);
+      await db.query(
+        `INSERT INTO "NanoBananaHistory"
+           ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [prompt, model, resultKey, result.mimeType, imageList.length, inputKeys]
+      );
+    } catch (histErr) {
+      console.error("history save failed:", histErr);
+    }
+
     return NextResponse.json({ image: result.image, mimeType: result.mimeType });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unexpected server error." }, { status: 500 });

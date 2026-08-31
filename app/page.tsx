@@ -1,8 +1,19 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type ModelKey = "nano-banana-pro" | "nano-banana-2" | "gpt-image-2";
+
+type HistoryItem = {
+  id: string;
+  prompt: string;
+  model: string;
+  mimeType: string;
+  inputImageCount: number;
+  createdAt: string;
+  url: string;
+  inputUrls: string[];
+};
 
 type UploadedImage = {
   id: string;
@@ -30,6 +41,32 @@ const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
 };
 
 let nextId = 0;
+
+// Image with a shimmer placeholder while the (presigned S3) URL loads
+function LoadedImg({
+  src,
+  alt,
+  className,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <span className={`imgwrap ${loaded ? "loaded" : ""}`}>
+      {!loaded && <span className="img-spinner" />}
+      <img
+        src={src}
+        alt={alt}
+        className={className}
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+        onError={() => setLoaded(true)}
+      />
+    </span>
+  );
+}
 
 // Vercel rejects request bodies over 4.5 MB, so images are downscaled
 // in the browser before upload to keep the JSON payload safely under it.
@@ -97,6 +134,49 @@ export default function Home() {
     null,
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<HistoryItem | null>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  const loadHistory = async () => {
+    try {
+      const res = await fetch("/api/history");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load history.");
+      setHistory(data.items);
+      setHistoryError(null);
+    } catch (err: any) {
+      setHistoryError(err.message || "Could not load history.");
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const deleteHistoryItem = async (id: string) => {
+    setHistory((prev) => prev.filter((h) => h.id !== id));
+    await fetch("/api/history", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => loadHistory());
+  };
+
+  const reuseHistoryItem = (item: HistoryItem) => {
+    setPrompt(item.prompt);
+    if (item.model in MODEL_INFO) setModel(item.model as ModelKey);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const loadFiles = (files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
@@ -186,6 +266,7 @@ export default function Home() {
         src: `data:${data.mimeType};base64,${data.image}`,
         mime: data.mimeType,
       });
+      loadHistory();
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -368,6 +449,154 @@ export default function Home() {
           )}
         </section>
       </div>
+
+      <section className="panel history-panel">
+        <div className="history-head">
+          <div className="panel-label">History</div>
+          <button className="history-refresh" onClick={loadHistory} title="Refresh">
+            ↻ Refresh
+          </button>
+        </div>
+        {historyError ? (
+          <div className="error">{historyError}</div>
+        ) : history.length === 0 ? (
+          <p className="history-empty">
+            No generations yet — your prompts, models and results will appear
+            here.
+          </p>
+        ) : (
+          <div className="history-grid">
+            {history.map((item) => (
+              <div className="history-card" key={item.id}>
+                <a
+                  href={item.url}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSelected(item);
+                  }}
+                >
+                  <LoadedImg src={item.url} alt={item.prompt} />
+                </a>
+                <div className="history-info">
+                  <p className="history-prompt" title={item.prompt}>
+                    {item.prompt}
+                  </p>
+                  <div className="history-meta">
+                    <span className="history-model">
+                      {MODEL_INFO[item.model as ModelKey]?.label ?? item.model}
+                    </span>
+                    <span>
+                      {item.inputImageCount > 0
+                        ? `${item.inputImageCount} input img`
+                        : "text-to-image"}
+                    </span>
+                    <span>
+                      {new Date(item.createdAt).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                  <div className="history-actions">
+                    <button onClick={() => reuseHistoryItem(item)}>
+                      ↩ Reuse
+                    </button>
+                    <button onClick={() => setSelected(item)}>👁 View</button>
+                    <button
+                      className="danger"
+                      onClick={() => deleteHistoryItem(item.id)}
+                    >
+                      ✕ Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {selected && (
+        <div className="modal-backdrop" onClick={() => setSelected(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSelected(null)}>
+              ✕
+            </button>
+
+            <div className="modal-meta">
+              <span className="modal-model">
+                {MODEL_INFO[selected.model as ModelKey]?.label ??
+                  selected.model}
+              </span>
+              <span className="modal-date">
+                {new Date(selected.createdAt).toLocaleString(undefined, {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </div>
+
+            <div className="modal-section-label">Prompt</div>
+            <p className="modal-prompt">{selected.prompt}</p>
+
+            {selected.inputUrls.length > 0 ? (
+              <>
+                <div className="modal-section-label">
+                  Input images ({selected.inputUrls.length})
+                </div>
+                <div className="modal-inputs">
+                  {selected.inputUrls.map((url, i) => (
+                    <a href={url} target="_blank" rel="noreferrer" key={i}>
+                      <LoadedImg src={url} alt={`Input ${i + 1}`} />
+                    </a>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="modal-section-label">
+                Text-to-image — no input images
+                {selected.inputImageCount > 0 &&
+                  ` (${selected.inputImageCount} used, not stored for this older entry)`}
+              </div>
+            )}
+
+            <div className="modal-section-label">Result</div>
+            <a href={selected.url} target="_blank" rel="noreferrer">
+              <LoadedImg
+                className="modal-result"
+                src={selected.url}
+                alt={selected.prompt}
+              />
+            </a>
+
+            <div className="modal-actions">
+              <a
+                className="action-btn"
+                href={selected.url}
+                download
+                target="_blank"
+                rel="noreferrer"
+              >
+                ⬇ Download result
+              </a>
+              <button
+                className="action-btn"
+                onClick={() => {
+                  reuseHistoryItem(selected);
+                  setSelected(null);
+                }}
+              >
+                ↩ Reuse prompt & model
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
