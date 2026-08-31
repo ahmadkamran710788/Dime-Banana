@@ -504,6 +504,9 @@ export default function Home() {
                       ↩ Reuse
                     </button>
                     <button onClick={() => setSelected(item)}>👁 View</button>
+                    <a href={`/api/download?id=${item.id}`} title="Download">
+                      ⬇
+                    </a>
                     <button
                       className="danger"
                       onClick={() => deleteHistoryItem(item.id)}
@@ -575,13 +578,7 @@ export default function Home() {
             </a>
 
             <div className="modal-actions">
-              <a
-                className="action-btn"
-                href={selected.url}
-                download
-                target="_blank"
-                rel="noreferrer"
-              >
+              <a className="action-btn" href={`/api/download?id=${selected.id}`}>
                 ⬇ Download result
               </a>
               <button
