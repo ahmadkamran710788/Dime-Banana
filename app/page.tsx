@@ -125,14 +125,17 @@ function compressImage(
 
 export default function Home() {
   const [model, setModel] = useState<ModelKey>("nano-banana-pro");
+  const [resolution, setResolution] = useState<"1K" | "2K" | "4K">("1K");
   const [prompt, setPrompt] = useState("");
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ src: string; mime: string } | null>(
-    null,
-  );
+  const [result, setResult] = useState<{
+    src: string;
+    mime: string;
+    id: string | null;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -226,6 +229,7 @@ export default function Home() {
     const body = JSON.stringify({
       prompt: prompt.trim(),
       model,
+      resolution: model === "gpt-image-2" ? "1K" : resolution,
       images: images.map(({ data, mimeType }) => ({ data, mimeType })),
     });
     if (body.length > MAX_PAYLOAD_BYTES) {
@@ -263,8 +267,9 @@ export default function Home() {
         );
       }
       setResult({
-        src: `data:${data.mimeType};base64,${data.image}`,
+        src: data.url ?? `data:${data.mimeType};base64,${data.image}`,
         mime: data.mimeType,
+        id: data.id ?? null,
       });
       loadHistory();
     } catch (err: any) {
@@ -274,18 +279,46 @@ export default function Home() {
     }
   };
 
-  const useAsInput = () => {
+  const useAsInput = async () => {
     if (!result || images.length >= MAX_IMAGES) return;
-    setImages((prev) => [
-      ...prev,
-      {
-        id: `img-${nextId++}`,
-        data: result.src.split(",")[1],
-        mimeType: result.mime,
-        previewUrl: result.src,
-        name: "generated result",
-      },
-    ]);
+    if (result.src.startsWith("data:")) {
+      setImages((prev) => [
+        ...prev,
+        {
+          id: `img-${nextId++}`,
+          data: result.src.split(",")[1],
+          mimeType: result.mime,
+          previewUrl: result.src,
+          name: "generated result",
+        },
+      ]);
+      return;
+    }
+    // 2K/4K results arrive as a URL — fetch same-origin and run through the
+    // normal compression pipeline so the next request stays under the limit.
+    try {
+      const res = await fetch(`/api/download?id=${result.id}&inline=1`);
+      if (!res.ok) throw new Error("Could not load the result image.");
+      const blob = await res.blob();
+      const file = new File([blob], "generated result", { type: result.mime });
+      const { data, mimeType, previewUrl } = await compressImage(file);
+      setImages((prev) =>
+        prev.length >= MAX_IMAGES
+          ? prev
+          : [
+              ...prev,
+              {
+                id: `img-${nextId++}`,
+                data,
+                mimeType,
+                previewUrl,
+                name: "generated result",
+              },
+            ],
+      );
+    } catch (err: any) {
+      setError(err.message || "Could not reuse the result as input.");
+    }
   };
 
   return (
@@ -394,6 +427,36 @@ export default function Home() {
             }}
           />
 
+          <div className="panel-label" style={{ marginTop: 18 }}>
+            Resolution
+          </div>
+          <div className="res-switch">
+            {(["1K", "2K", "4K"] as const).map((r) => (
+              <button
+                key={r}
+                className={
+                  (model === "gpt-image-2" ? r === "1K" : resolution === r)
+                    ? "active"
+                    : ""
+                }
+                disabled={model === "gpt-image-2" && r !== "1K"}
+                title={
+                  model === "gpt-image-2" && r !== "1K"
+                    ? "GPT Image 2 supports up to its native ~1.5K only"
+                    : `Generate at ${r}`
+                }
+                onClick={() => setResolution(r)}
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+          {model === "gpt-image-2" && (
+            <p className="res-note">
+              2K / 4K are available on the Nano Banana models.
+            </p>
+          )}
+
           <button
             className="generate"
             onClick={generate}
@@ -433,8 +496,10 @@ export default function Home() {
             <div className="result-actions">
               <a
                 className="action-btn"
-                href={result.src}
-                download={`nano-banana-${Date.now()}.png`}
+                href={
+                  result.id ? `/api/download?id=${result.id}` : result.src
+                }
+                download={result.id ? undefined : "nano-banana-result"}
               >
                 ⬇ Download
               </a>
