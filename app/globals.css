@@ -589,6 +589,21 @@ textarea:focus {
   font-weight: 600;
 }
 
+.history-res,
+.modal-res {
+  font-family: "Sora", sans-serif;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.modal-res {
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
 .history-actions {
   display: flex;
   gap: 6px;

@@ -132,12 +132,14 @@ export async function POST(req: NextRequest) {
         ),
       ]);
       resultKey = key;
+      const effectiveResolution =
+        model === "gpt-image-2" ? "1K" : resolution === "2K" || resolution === "4K" ? resolution : "1K";
       const { rows } = await db.query(
         `INSERT INTO "NanoBananaHistory"
-           ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys")
-         VALUES ($1, $2, $3, $4, $5, $6)
+           ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys", "resolution")
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING "id"`,
-        [prompt, model, key, result.mimeType, imageList.length, inputKeys]
+        [prompt, model, key, result.mimeType, imageList.length, inputKeys, effectiveResolution]
       );
       historyId = rows[0]?.id ?? null;
     } catch (histErr) {
