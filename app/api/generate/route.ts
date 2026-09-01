@@ -52,10 +52,18 @@ async function generateGemini(
   };
 }
 
-async function generateOpenAI(prompt: string, images: ImageInput[]) {
+// gpt-image-2 takes explicit WIDTHxHEIGHT (longest edge ≤ 3840, ~8.3MP budget),
+// so 2K/4K map to the standard 16:9 QHD / UHD sizes.
+const OPENAI_SIZES: Record<string, string> = {
+  "2K": "2560x1440",
+  "4K": "3840x2160",
+};
+
+async function generateOpenAI(prompt: string, images: ImageInput[], resolution: string) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return { error: "Server is missing OPENAI_API_KEY.", status: 500 };
 
+  const size = OPENAI_SIZES[resolution] ?? "auto";
   let res: Response;
   if (images.length === 0) {
     res = await fetch("https://api.openai.com/v1/images/generations", {
@@ -65,7 +73,7 @@ async function generateOpenAI(prompt: string, images: ImageInput[]) {
       body: JSON.stringify({
         model: "gpt-image-2",
         prompt,
-        size: "auto",
+        size,
         output_format: "jpeg",
         output_compression: 90,
       }),
@@ -74,6 +82,7 @@ async function generateOpenAI(prompt: string, images: ImageInput[]) {
     const form = new FormData();
     form.append("model", "gpt-image-2");
     form.append("prompt", prompt);
+    form.append("size", size);
     form.append("output_format", "jpeg");
     form.append("output_compression", "90");
     images.forEach((img, i) => {
@@ -110,7 +119,7 @@ export async function POST(req: NextRequest) {
 
     let result;
     if (model === "gpt-image-2") {
-      result = await generateOpenAI(prompt, imageList);
+      result = await generateOpenAI(prompt, imageList, resolution);
     } else if (GEMINI_MODELS[model]) {
       result = await generateGemini(GEMINI_MODELS[model], prompt, imageList, resolution);
     } else {
@@ -133,7 +142,7 @@ export async function POST(req: NextRequest) {
       ]);
       resultKey = key;
       const effectiveResolution =
-        model === "gpt-image-2" ? "1K" : resolution === "2K" || resolution === "4K" ? resolution : "1K";
+        resolution === "2K" || resolution === "4K" ? resolution : "1K";
       const { rows } = await db.query(
         `INSERT INTO "NanoBananaHistory"
            ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys", "resolution")
