@@ -233,7 +233,7 @@ export default function Home() {
     const body = JSON.stringify({
       prompt: prompt.trim(),
       model,
-      resolution: model === "gpt-image-2" ? "1K" : resolution,
+      resolution,
       images: images.map(({ data, mimeType }) => ({ data, mimeType })),
     });
     if (body.length > MAX_PAYLOAD_BYTES) {
@@ -438,28 +438,14 @@ export default function Home() {
             {(["1K", "2K", "4K"] as const).map((r) => (
               <button
                 key={r}
-                className={
-                  (model === "gpt-image-2" ? r === "1K" : resolution === r)
-                    ? "active"
-                    : ""
-                }
-                disabled={model === "gpt-image-2" && r !== "1K"}
-                title={
-                  model === "gpt-image-2" && r !== "1K"
-                    ? "GPT Image 2 supports up to its native ~1.5K only"
-                    : `Generate at ${r}`
-                }
+                className={resolution === r ? "active" : ""}
+                title={`Generate at ${r}`}
                 onClick={() => setResolution(r)}
               >
                 {r}
               </button>
             ))}
           </div>
-          {model === "gpt-image-2" && (
-            <p className="res-note">
-              2K / 4K are available on the Nano Banana models.
-            </p>
-          )}
 
           <button
             className="generate"
