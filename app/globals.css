@@ -25,6 +25,14 @@ body {
   min-height: 100%;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+img {
+  max-width: 100%;
+}
+
 body {
   font-family: "Inter", -apple-system, sans-serif;
   background: var(--bg);
@@ -99,6 +107,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 999px;
   backdrop-filter: blur(12px);
+  max-width: 100%;
 }
 
 .model-switch button {
@@ -130,7 +139,7 @@ body {
 /* ---------- layout ---------- */
 .grid {
   display: grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: minmax(340px, 420px) 1fr;
   gap: 24px;
   align-items: start;
 }
@@ -257,6 +266,10 @@ body {
 .dz-inner p {
   font-size: 14px;
   font-weight: 500;
+}
+
+.dz-tap-hint {
+  display: none;
 }
 
 .dz-inner small {
@@ -452,12 +465,13 @@ textarea:focus {
 
 .result-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 16px;
 }
 
 .action-btn {
-  flex: 1;
+  flex: 1 1 150px;
   appearance: none;
   cursor: pointer;
   font-family: "Sora", sans-serif;
@@ -568,6 +582,7 @@ textarea:focus {
 .history-prompt {
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -809,8 +824,9 @@ textarea:focus {
 
 .modal-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 10px 14px;
   margin-bottom: 18px;
   padding-right: 44px;
 }
@@ -848,6 +864,7 @@ textarea:focus {
   background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--border);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .modal-inputs {
@@ -889,6 +906,341 @@ textarea:focus {
 
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 20px;
+}
+
+/* =========================================================
+   Responsive / mobile
+   ========================================================= */
+
+/* Touch devices: no hover lifts, no fixed background (janky on iOS),
+   and copy that talks about tapping instead of dropping/clicking. */
+@media (hover: none) {
+  body {
+    background-attachment: scroll;
+  }
+
+  .history-card:hover {
+    transform: none;
+    border-color: var(--border);
+  }
+
+  .generate:hover:not(:disabled) {
+    transform: none;
+    box-shadow: 0 6px 24px rgba(255, 180, 60, 0.3);
+  }
+
+  .dz-drop-hint {
+    display: none;
+  }
+
+  .dz-tap-hint {
+    display: inline;
+  }
+
+  .kbd-hint {
+    display: none;
+  }
+}
+
+/* Tablets and small laptops */
+@media (max-width: 900px) {
+  .shell {
+    padding: 28px 20px 64px;
+  }
+
+  .header {
+    margin-bottom: 28px;
+  }
+
+  .result-panel {
+    min-height: 0;
+  }
+
+  .result-body {
+    min-height: 340px;
+  }
+}
+
+/* Phones */
+@media (max-width: 640px) {
+  .shell {
+    padding: 18px 14px 48px;
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+    padding-bottom: max(48px, env(safe-area-inset-bottom));
+  }
+
+  /* header stacks: brand on top, full-width model switch below */
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+
+  .brand {
+    gap: 12px;
+  }
+
+  .brand-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 21px;
+    border-radius: 12px;
+    flex-shrink: 0;
+  }
+
+  .brand h1 {
+    font-size: 19px;
+  }
+
+  .brand p {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .model-switch {
+    width: 100%;
+    padding: 4px;
+  }
+
+  .model-switch button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 9px 6px;
+    font-size: 12px;
+    line-height: 1.2;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .grid {
+    gap: 14px;
+  }
+
+  .panel {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  /* uploads */
+  .thumbs {
+    gap: 8px;
+  }
+
+  .thumb-remove {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+  }
+
+  .dropzone {
+    min-height: 150px;
+    margin-bottom: 18px;
+  }
+
+  .dropzone.compact {
+    min-height: 96px;
+  }
+
+  .dz-inner {
+    padding: 20px 14px;
+  }
+
+  .dz-inner .dz-icon {
+    font-size: 26px;
+  }
+
+  .dz-inner small {
+    font-size: 11.5px;
+  }
+
+  /* 16px stops iOS Safari from auto-zooming into the field */
+  textarea {
+    font-size: 16px;
+    min-height: 110px;
+    padding: 12px 14px;
+  }
+
+  .res-switch button {
+    padding: 12px 8px;
+    min-height: 44px;
+  }
+
+  .generate {
+    margin-top: 16px;
+    min-height: 50px;
+  }
+
+  .model-note {
+    font-size: 12px;
+  }
+
+  /* result */
+  .result-body {
+    min-height: 260px;
+  }
+
+  .result-body img {
+    max-height: 70vh;
+  }
+
+  .placeholder,
+  .loading {
+    padding: 28px 18px;
+  }
+
+  .placeholder .ph-icon {
+    font-size: 36px;
+  }
+
+  .placeholder p {
+    font-size: 14px;
+  }
+
+  .action-btn {
+    padding: 13px 10px;
+    min-height: 44px;
+  }
+
+  /* history */
+  .history-panel {
+    margin-top: 14px;
+  }
+
+  .history-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+
+  .history-info {
+    padding: 10px 10px 12px;
+  }
+
+  .history-prompt {
+    font-size: 12.5px;
+  }
+
+  .history-meta {
+    font-size: 10.5px;
+    gap: 4px 8px;
+  }
+
+  .history-actions {
+    flex-wrap: wrap;
+  }
+
+  .history-actions button,
+  .history-actions a {
+    flex: 1 1 calc(50% - 3px);
+    min-height: 38px;
+    padding: 8px 4px;
+    font-size: 12px;
+  }
+
+  /* modal becomes a bottom sheet */
+  .modal-backdrop {
+    padding: 0;
+    align-items: end;
+  }
+
+  .modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    border-bottom: none;
+    padding: 14px 16px calc(20px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* keep the close button reachable while the sheet scrolls */
+  .modal-close {
+    position: sticky;
+    top: 0;
+    right: auto;
+    margin-left: auto;
+    margin-bottom: -34px;
+    z-index: 2;
+    width: 36px;
+    height: 36px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .modal-meta {
+    margin-top: 6px;
+    padding-right: 44px;
+    gap: 8px 10px;
+  }
+
+  .modal-model {
+    font-size: 12px;
+    padding: 5px 12px;
+  }
+
+  .modal-date {
+    font-size: 12px;
+  }
+
+  .modal-section-label {
+    margin: 16px 0 8px;
+  }
+
+  .modal-prompt {
+    font-size: 14px;
+    padding: 12px 14px;
+  }
+
+  .modal-inputs {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+  }
+
+  .modal-result {
+    max-height: 65vh;
+  }
+
+  .modal-actions {
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .modal-actions .action-btn {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
+
+/* Very narrow phones */
+@media (max-width: 380px) {
+  .shell {
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .model-switch button {
+    font-size: 11.5px;
+    padding: 8px 4px;
+  }
+
+  .thumbs {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .history-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .history-card > a {
+    aspect-ratio: 16 / 10;
+  }
 }
