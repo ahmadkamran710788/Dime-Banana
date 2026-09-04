@@ -148,7 +148,13 @@ export default function Home() {
       if (e.key === "Escape") setSelected(null);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // keep the page behind the modal from scrolling (matters on touch)
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [selected]);
 
   const loadHistory = async () => {
@@ -393,9 +399,16 @@ export default function Home() {
               <div className="dz-inner">
                 <div className="dz-icon">🖼️</div>
                 <p>
-                  {images.length > 0
-                    ? "Add more images"
-                    : "Drop images here or click to browse"}
+                  {images.length > 0 ? (
+                    "Add more images"
+                  ) : (
+                    <>
+                      <span className="dz-drop-hint">
+                        Drop images here or click
+                      </span>
+                      <span className="dz-tap-hint">Tap</span> to browse
+                    </>
+                  )}
                 </p>
                 <small>
                   PNG, JPG, WebP · select several at once · leave empty for
@@ -458,7 +471,8 @@ export default function Home() {
           {error && <div className="error">{error}</div>}
 
           <p className="model-note">
-            Using <b>{MODEL_INFO[model].label}</b> · ⌘/Ctrl + Enter to generate
+            Using <b>{MODEL_INFO[model].label}</b>
+            <span className="kbd-hint"> · ⌘/Ctrl + Enter to generate</span>
           </p>
         </section>
 
