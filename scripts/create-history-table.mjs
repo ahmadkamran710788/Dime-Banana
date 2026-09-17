@@ -32,6 +32,14 @@ ALTER TABLE "NanoBananaHistory"
   ADD COLUMN IF NOT EXISTS "inputImageKeys" TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE "NanoBananaHistory"
   ADD COLUMN IF NOT EXISTS "resolution" TEXT;
+ALTER TABLE "NanoBananaHistory"
+  ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'done';
+ALTER TABLE "NanoBananaHistory"
+  ADD COLUMN IF NOT EXISTS "error" TEXT;
+ALTER TABLE "NanoBananaHistory"
+  ALTER COLUMN "imageKey" DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS "NanoBananaHistory_pending_idx"
+  ON "NanoBananaHistory"("createdAt") WHERE "status" = 'pending';
 `;
 
 try {

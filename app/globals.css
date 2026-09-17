@@ -911,6 +911,108 @@ textarea:focus {
   margin-top: 20px;
 }
 
+/* ---------- background jobs ---------- */
+.jobs-note {
+  margin-top: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--accent);
+}
+
+.generating-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Sora", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(10, 10, 15, 0.8);
+  border: 1px solid var(--border-strong);
+  backdrop-filter: blur(8px);
+}
+
+.mini-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+.history-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  aspect-ratio: 4 / 3;
+  padding: 14px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.history-pending .spinner {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+}
+
+.history-pending span {
+  font-size: 13px;
+  color: var(--text-dim);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.history-card.is-pending {
+  border-color: rgba(255, 213, 74, 0.35);
+}
+
+.history-card.is-failed {
+  border-color: rgba(255, 107, 107, 0.35);
+}
+
+.history-failed {
+  color: #ffb4b4;
+}
+
+.history-failed .hf-icon {
+  font-size: 22px;
+}
+
+.history-failed span {
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.history-status {
+  font-family: "Sora", sans-serif;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.history-status.pending {
+  color: var(--accent);
+}
+
+.history-status.failed {
+  color: var(--danger);
+}
+
 /* =========================================================
    Responsive / mobile
    ========================================================= */
