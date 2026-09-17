@@ -1,8 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { db } from "@/lib/db";
-import { uploadResultImage, uploadInputImage, imageUrl } from "@/lib/s3";
+import { uploadResultImage, uploadInputImage, deleteImage } from "@/lib/s3";
 
-export const maxDuration = 120;
+// Covers the ~1s response AND the background job scheduled with after().
+// On Vercel this needs Fluid Compute (default for new projects).
+export const maxDuration = 300;
 
 type ImageInput = { data: string; mimeType: string };
 
@@ -105,6 +107,63 @@ async function generateOpenAI(prompt: string, images: ImageInput[], resolution: 
   return { image: b64, mimeType: "image/jpeg" };
 }
 
+type Job = {
+  id: string;
+  prompt: string;
+  model: string;
+  images: ImageInput[];
+  resolution: string;
+};
+
+async function markFailed(id: string, message: string) {
+  try {
+    await db.query(
+      `UPDATE "NanoBananaHistory" SET "status" = 'failed', "error" = $2 WHERE "id" = $1`,
+      [id, message.slice(0, 1000)]
+    );
+  } catch (dbErr) {
+    console.error(`job ${id}: could not mark failed:`, dbErr);
+  }
+}
+
+// Runs after the HTTP response has been sent. Several of these can be in
+// flight at once — each one owns exactly one history row and only ever
+// touches that row, so parallel jobs never interfere with each other.
+async function runGeneration(job: Job) {
+  const { id, prompt, model, images, resolution } = job;
+  try {
+    const result =
+      model === "gpt-image-2"
+        ? await generateOpenAI(prompt, images, resolution)
+        : await generateGemini(GEMINI_MODELS[model], prompt, images, resolution);
+
+    if ("error" in result && result.error) {
+      await markFailed(id, result.error);
+      return;
+    }
+
+    const key = await uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!);
+    const { rowCount } = await db.query(
+      `UPDATE "NanoBananaHistory"
+          SET "status" = 'done', "imageKey" = $2, "mimeType" = $3, "error" = NULL
+        WHERE "id" = $1`,
+      [id, key, result.mimeType]
+    );
+    if (rowCount === 0) {
+      // The user deleted the pending entry while it was generating — don't
+      // leave an orphaned object in S3.
+      console.log(`job ${id}: row was deleted mid-generation, removing result object`);
+      await deleteImage(key).catch((e) => console.error("s3 cleanup failed:", e));
+    }
+  } catch (err: any) {
+    console.error(`job ${id} failed:`, err);
+    await markFailed(id, err?.message || "Unexpected server error.");
+  }
+}
+
+// Accepts the request, records a pending history row, and returns at once.
+// The model call itself runs in the background (after()), so it keeps going
+// if the browser reloads, and the client can start more jobs in parallel.
 export async function POST(req: NextRequest) {
   try {
     const { prompt, model, images, resolution } = await req.json();
@@ -112,59 +171,59 @@ export async function POST(req: NextRequest) {
     if (!prompt || typeof prompt !== "string") {
       return NextResponse.json({ error: "A prompt is required." }, { status: 400 });
     }
-
-    const imageList: ImageInput[] = Array.isArray(images)
-      ? images.filter((img: any) => img?.data && img?.mimeType)
-      : [];
-
-    let result;
     if (model === "gpt-image-2") {
-      result = await generateOpenAI(prompt, imageList, resolution);
+      if (!process.env.OPENAI_API_KEY)
+        return NextResponse.json({ error: "Server is missing OPENAI_API_KEY." }, { status: 500 });
     } else if (GEMINI_MODELS[model]) {
-      result = await generateGemini(GEMINI_MODELS[model], prompt, imageList, resolution);
+      if (!process.env.GEMINI_API_KEY)
+        return NextResponse.json({ error: "Server is missing GEMINI_API_KEY." }, { status: 500 });
     } else {
       return NextResponse.json({ error: "Unknown model." }, { status: 400 });
     }
 
-    if ("error" in result && result.error) {
-      return NextResponse.json({ error: result.error }, { status: result.status || 500 });
-    }
+    const imageList: ImageInput[] = Array.isArray(images)
+      ? images.filter((img: any) => img?.data && img?.mimeType)
+      : [];
+    const effectiveResolution =
+      resolution === "2K" || resolution === "4K" ? resolution : "1K";
 
-    // Record in history (S3 + DB). Never fail the generation over a history hiccup.
-    let historyId: string | null = null;
-    let resultKey: string | null = null;
-    try {
-      const [key, inputKeys] = await Promise.all([
-        uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!),
-        Promise.all(
-          imageList.map((img) => uploadInputImage(Buffer.from(img.data, "base64"), img.mimeType))
-        ),
-      ]);
-      resultKey = key;
-      const effectiveResolution =
-        resolution === "2K" || resolution === "4K" ? resolution : "1K";
-      const { rows } = await db.query(
-        `INSERT INTO "NanoBananaHistory"
-           ("prompt", "model", "imageKey", "mimeType", "inputImageCount", "inputImageKeys", "resolution")
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING "id"`,
-        [prompt, model, key, result.mimeType, imageList.length, inputKeys, effectiveResolution]
-      );
-      historyId = rows[0]?.id ?? null;
-    } catch (histErr) {
-      console.error("history save failed:", histErr);
-    }
+    // Inputs are stored up front so the pending row is complete from the
+    // start (Reuse / Delete work even if the job later fails).
+    const inputKeys = await Promise.all(
+      imageList.map((img) => uploadInputImage(Buffer.from(img.data, "base64"), img.mimeType))
+    );
 
-    // Vercel caps responses at 4.5 MB — 2K/4K results are far bigger than that
-    // as base64, so large images are returned as a presigned S3 URL instead.
-    if (result.image!.length > 3_000_000 && resultKey) {
-      return NextResponse.json({
-        url: await imageUrl(resultKey),
-        mimeType: result.mimeType,
-        id: historyId,
-      });
-    }
-    return NextResponse.json({ image: result.image, mimeType: result.mimeType, id: historyId });
+    const { rows } = await db.query(
+      `INSERT INTO "NanoBananaHistory"
+         ("prompt", "model", "inputImageCount", "inputImageKeys", "resolution", "status")
+       VALUES ($1, $2, $3, $4, $5, 'pending')
+       RETURNING "id", "createdAt"`,
+      [prompt, model, imageList.length, inputKeys, effectiveResolution]
+    );
+    const id: string = rows[0].id;
+
+    after(() => runGeneration({ id, prompt, model, images: imageList, resolution: effectiveResolution }));
+
+    // Same shape as an item from GET /api/history so the client can insert
+    // it optimistically.
+    return NextResponse.json(
+      {
+        item: {
+          id,
+          prompt,
+          model,
+          mimeType: "image/jpeg",
+          inputImageCount: imageList.length,
+          resolution: effectiveResolution,
+          createdAt: rows[0].createdAt,
+          status: "pending",
+          error: null,
+          url: null,
+          inputUrls: [],
+        },
+      },
+      { status: 202 }
+    );
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unexpected server error." }, { status: 500 });
   }

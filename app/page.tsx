@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type ModelKey = "nano-banana-pro" | "nano-banana-2" | "gpt-image-2";
+
+type JobStatus = "pending" | "done" | "failed";
 
 type HistoryItem = {
   id: string;
@@ -12,7 +14,9 @@ type HistoryItem = {
   inputImageCount: number;
   resolution: string | null;
   createdAt: string;
-  url: string;
+  status: JobStatus;
+  error: string | null;
+  url: string | null; // null until the job is done
   inputUrls: string[];
 };
 
@@ -25,7 +29,10 @@ type UploadedImage = {
 };
 
 const MAX_IMAGES = 6;
-//okok
+// ids of jobs started from this browser — persisted so a reload still shows
+// the finished image in the Result panel
+const MY_IDS_KEY = "nb:myIds";
+const POLL_MS = 3000;
 const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
   "nano-banana-pro": {
     label: "Nano Banana Pro",
@@ -130,17 +137,42 @@ export default function Home() {
   const [prompt, setPrompt] = useState("");
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [loading, setLoading] = useState(false);
+  // true only while the POST itself is in flight (~1s); generation continues
+  // on the server and the button is free again for the next job
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{
-    src: string;
-    mime: string;
-    id: string | null;
-  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selected, setSelected] = useState<HistoryItem | null>(null);
+  const [myIds, setMyIds] = useState<string[]>([]);
+  const myIdsRef = useRef<string[]>([]);
+  // monotonic counter so a slow /api/history response can't overwrite
+  // newer local state (optimistic insert / delete)
+  const historySeqRef = useRef(0);
+  const prevStatusRef = useRef<Map<string, JobStatus>>(new Map());
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(MY_IDS_KEY);
+      if (raw) {
+        const ids = JSON.parse(raw);
+        if (Array.isArray(ids)) {
+          myIdsRef.current = ids;
+          setMyIds(ids);
+        }
+      }
+    } catch {}
+  }, []);
+
+  const rememberIds = (update: (prev: string[]) => string[]) => {
+    const next = update(myIdsRef.current).slice(0, 20);
+    myIdsRef.current = next;
+    setMyIds(next);
+    try {
+      localStorage.setItem(MY_IDS_KEY, JSON.stringify(next));
+    } catch {}
+  };
 
   useEffect(() => {
     if (!selected) return;
@@ -157,30 +189,83 @@ export default function Home() {
     };
   }, [selected]);
 
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
+    const seq = ++historySeqRef.current;
     try {
       const res = await fetch("/api/history");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not load history.");
-      setHistory(data.items);
+      if (seq !== historySeqRef.current) return; // superseded by a newer change
+      const items: HistoryItem[] = data.items;
+      setHistory(items);
       setHistoryError(null);
+      // surface failures of jobs started from this browser
+      for (const it of items) {
+        if (
+          myIdsRef.current.includes(it.id) &&
+          prevStatusRef.current.get(it.id) === "pending" &&
+          it.status === "failed"
+        ) {
+          setError(it.error || "Generation failed.");
+        }
+      }
+      prevStatusRef.current = new Map(items.map((i) => [i.id, i.status]));
     } catch (err: any) {
+      if (seq !== historySeqRef.current) return;
       setHistoryError(err.message || "Could not load history.");
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [loadHistory]);
+
+  // Poll while any job is still generating so cards flip to the finished
+  // image (and the Result panel updates) without a manual refresh.
+  const anyPending = history.some((h) => h.status === "pending");
+  useEffect(() => {
+    if (!anyPending) return;
+    let inFlight = false;
+    const tick = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        await loadHistory();
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = setInterval(tick, POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [anyPending, loadHistory]);
 
   const deleteHistoryItem = async (id: string) => {
+    historySeqRef.current++; // drop any in-flight poll that still has this row
     setHistory((prev) => prev.filter((h) => h.id !== id));
-    await fetch("/api/history", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    }).catch(() => loadHistory());
+    rememberIds((prev) => prev.filter((x) => x !== id));
+    if (selected?.id === id) setSelected(null);
+    try {
+      await fetch("/api/history", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+    } finally {
+      loadHistory();
+    }
   };
+
+  // Everything this browser started, newest first (history is already sorted)
+  const mine = history.filter((h) => myIds.includes(h.id));
+  const pendingMine = mine.filter((h) => h.status === "pending");
+  const latestDone = mine.find((h) => h.status === "done") ?? null;
 
   const reuseHistoryItem = (item: HistoryItem) => {
     setPrompt(item.prompt);
@@ -235,7 +320,7 @@ export default function Home() {
   };
 
   const generate = async () => {
-    if (!prompt.trim() || loading) return;
+    if (!prompt.trim() || submitting) return;
     const body = JSON.stringify({
       prompt: prompt.trim(),
       model,
@@ -248,9 +333,8 @@ export default function Home() {
       );
       return;
     }
-    setLoading(true);
+    setSubmitting(true);
     setError(null);
-    setResult(null);
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -273,44 +357,35 @@ export default function Home() {
             "Rate limit reached — please wait a moment and try again.",
           );
         throw new Error(
-          data?.error || `Generation failed (HTTP ${res.status}).`,
+          data?.error || `Could not start generation (HTTP ${res.status}).`,
         );
       }
-      setResult({
-        src: data.url ?? `data:${data.mimeType};base64,${data.image}`,
-        mime: data.mimeType,
-        id: data.id ?? null,
-      });
+      // The job is now running on the server. Show it in History right away
+      // and let polling pick up the finished image.
+      const item: HistoryItem = data.item;
+      historySeqRef.current++;
+      setHistory((prev) => [item, ...prev.filter((h) => h.id !== item.id)]);
+      prevStatusRef.current.set(item.id, "pending");
+      rememberIds((prev) => [item.id, ...prev.filter((x) => x !== item.id)]);
       loadHistory();
     } catch (err: any) {
       setError(err.message || "Something went wrong.");
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
   const useAsInput = async () => {
-    if (!result || images.length >= MAX_IMAGES) return;
-    if (result.src.startsWith("data:")) {
-      setImages((prev) => [
-        ...prev,
-        {
-          id: `img-${nextId++}`,
-          data: result.src.split(",")[1],
-          mimeType: result.mime,
-          previewUrl: result.src,
-          name: "generated result",
-        },
-      ]);
-      return;
-    }
-    // 2K/4K results arrive as a URL — fetch same-origin and run through the
-    // normal compression pipeline so the next request stays under the limit.
+    if (!latestDone || images.length >= MAX_IMAGES) return;
+    // Results live in S3 — fetch same-origin and run through the normal
+    // compression pipeline so the next request stays under the limit.
     try {
-      const res = await fetch(`/api/download?id=${result.id}&inline=1`);
+      const res = await fetch(`/api/download?id=${latestDone.id}&inline=1`);
       if (!res.ok) throw new Error("Could not load the result image.");
       const blob = await res.blob();
-      const file = new File([blob], "generated result", { type: result.mime });
+      const file = new File([blob], "generated result", {
+        type: latestDone.mimeType,
+      });
       const { data, mimeType, previewUrl } = await compressImage(file);
       setImages((prev) =>
         prev.length >= MAX_IMAGES
@@ -463,10 +538,16 @@ export default function Home() {
           <button
             className="generate"
             onClick={generate}
-            disabled={loading || !prompt.trim()}
+            disabled={submitting || !prompt.trim()}
           >
-            {loading ? "Generating…" : "✦ Generate"}
+            {submitting ? "Starting…" : "✦ Generate"}
           </button>
+          {pendingMine.length > 0 && (
+            <p className="jobs-note">
+              {pendingMine.length} generation{pendingMine.length > 1 ? "s" : ""}{" "}
+              running in the background — you can start another one now.
+            </p>
+          )}
 
           {error && <div className="error">{error}</div>}
 
@@ -479,13 +560,17 @@ export default function Home() {
         <section className="panel result-panel">
           <div className="panel-label">Result</div>
           <div className="result-body">
-            {loading ? (
+            {latestDone ? (
+              <img src={latestDone.url ?? ""} alt="Generated result" />
+            ) : pendingMine.length > 0 ? (
               <div className="loading">
                 <div className="spinner" />
-                <p>{MODEL_INFO[model].label} is painting your image…</p>
+                <p>
+                  {pendingMine.length === 1
+                    ? `${MODEL_INFO[pendingMine[0].model as ModelKey]?.label ?? pendingMine[0].model} is painting your image…`
+                    : `${pendingMine.length} generations in progress…`}
+                </p>
               </div>
-            ) : result ? (
-              <img src={result.src} alt="Generated result" />
             ) : (
               <div className="placeholder">
                 <div className="ph-icon">🍌</div>
@@ -495,15 +580,18 @@ export default function Home() {
                 </p>
               </div>
             )}
+            {latestDone && pendingMine.length > 0 && (
+              <div className="generating-badge">
+                <span className="mini-spinner" />
+                {pendingMine.length} generating…
+              </div>
+            )}
           </div>
-          {result && !loading && (
+          {latestDone && (
             <div className="result-actions">
               <a
                 className="action-btn"
-                href={
-                  result.id ? `/api/download?id=${result.id}` : result.src
-                }
-                download={result.id ? undefined : "nano-banana-result"}
+                href={`/api/download?id=${latestDone.id}`}
               >
                 ⬇ Download
               </a>
@@ -536,16 +624,33 @@ export default function Home() {
         ) : (
           <div className="history-grid">
             {history.map((item) => (
-              <div className="history-card" key={item.id}>
-                <a
-                  href={item.url}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setSelected(item);
-                  }}
-                >
-                  <LoadedImg src={item.url} alt={item.prompt} />
-                </a>
+              <div
+                className={`history-card ${
+                  item.status !== "done" ? `is-${item.status}` : ""
+                }`}
+                key={item.id}
+              >
+                {item.status === "done" && item.url ? (
+                  <a
+                    href={item.url}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setSelected(item);
+                    }}
+                  >
+                    <LoadedImg src={item.url} alt={item.prompt} />
+                  </a>
+                ) : item.status === "pending" ? (
+                  <div className="history-thumb history-pending">
+                    <div className="spinner" />
+                    <span>Generating…</span>
+                  </div>
+                ) : (
+                  <div className="history-thumb history-failed">
+                    <div className="hf-icon">⚠️</div>
+                    <span>{item.error || "Generation failed."}</span>
+                  </div>
+                )}
                 <div className="history-info">
                   <p className="history-prompt" title={item.prompt}>
                     {item.prompt}
@@ -570,15 +675,29 @@ export default function Home() {
                         minute: "2-digit",
                       })}
                     </span>
+                    {item.status !== "done" && (
+                      <span className={`history-status ${item.status}`}>
+                        {item.status === "pending" ? "generating" : "failed"}
+                      </span>
+                    )}
                   </div>
                   <div className="history-actions">
                     <button onClick={() => reuseHistoryItem(item)}>
                       ↩ Reuse
                     </button>
-                    <button onClick={() => setSelected(item)}>👁 View</button>
-                    <a href={`/api/download?id=${item.id}`} title="Download">
-                      ⬇
-                    </a>
+                    {item.status === "done" && (
+                      <>
+                        <button onClick={() => setSelected(item)}>
+                          👁 View
+                        </button>
+                        <a
+                          href={`/api/download?id=${item.id}`}
+                          title="Download"
+                        >
+                          ⬇
+                        </a>
+                      </>
+                    )}
                     <button
                       className="danger"
                       onClick={() => deleteHistoryItem(item.id)}
@@ -644,10 +763,10 @@ export default function Home() {
             )}
 
             <div className="modal-section-label">Result</div>
-            <a href={selected.url} target="_blank" rel="noreferrer">
+            <a href={selected.url ?? "#"} target="_blank" rel="noreferrer">
               <LoadedImg
                 className="modal-result"
-                src={selected.url}
+                src={selected.url ?? ""}
                 alt={selected.prompt}
               />
             </a>

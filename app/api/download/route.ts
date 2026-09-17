@@ -23,6 +23,9 @@ export async function GET(req: NextRequest) {
     if (!rows[0]) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
     const { imageKey, mimeType } = rows[0];
+    if (!imageKey) {
+      return NextResponse.json({ error: "Image is not ready yet." }, { status: 409 });
+    }
     const ext = (mimeType || "image/jpeg").split("/")[1] || "jpg";
     const filename = `nano-banana-${id.slice(0, 8)}.${ext}`;
 

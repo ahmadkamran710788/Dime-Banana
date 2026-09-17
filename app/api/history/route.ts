@@ -4,11 +4,23 @@ import { imageUrl, deleteImage } from "@/lib/s3";
 
 export const dynamic = "force-dynamic";
 
+// Background jobs run inside the generate function's maxDuration (300s).
+// Anything still pending well past that was killed mid-flight.
+const STALE_AFTER = "6 minutes";
+
 export async function GET() {
   try {
+    await db.query(
+      `UPDATE "NanoBananaHistory"
+          SET "status" = 'failed',
+              "error" = 'Timed out — the server stopped before this generation finished.'
+        WHERE "status" = 'pending'
+          AND "createdAt" < now() - interval '${STALE_AFTER}'`
+    );
+
     const { rows } = await db.query(
       `SELECT "id", "prompt", "model", "imageKey", "mimeType", "inputImageCount",
-              "inputImageKeys", "resolution", "createdAt"
+              "inputImageKeys", "resolution", "createdAt", "status", "error"
        FROM "NanoBananaHistory"
        ORDER BY "createdAt" DESC
        LIMIT 30`
@@ -22,7 +34,9 @@ export async function GET() {
         inputImageCount: r.inputImageCount,
         resolution: r.resolution,
         createdAt: r.createdAt,
-        url: await imageUrl(r.imageKey),
+        status: r.status ?? "done",
+        error: r.error ?? null,
+        url: r.imageKey ? await imageUrl(r.imageKey) : null,
         inputUrls: await Promise.all(
           (r.inputImageKeys ?? []).map((k: string) => imageUrl(k))
         ),
