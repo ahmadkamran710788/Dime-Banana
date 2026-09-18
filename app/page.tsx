@@ -17,6 +17,7 @@ type HistoryItem = {
   status: JobStatus;
   error: string | null;
   url: string | null; // null until the job is done
+  thumbUrl: string | null; // small JPEG for the grid (falls back to url)
   inputUrls: string[];
 };
 
@@ -33,6 +34,10 @@ const MAX_IMAGES = 6;
 // the finished image in the Result panel
 const MY_IDS_KEY = "nb:myIds";
 const POLL_MS = 3000;
+// Presigned S3 URLs are valid for 1h. Every history fetch mints fresh ones,
+// which would change every <img src> and make the browser re-download all
+// the images on each poll — so URLs younger than this are kept as-is.
+const URL_REUSE_MS = 40 * 60 * 1000;
 const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
   "nano-banana-pro": {
     label: "Nano Banana Pro",
@@ -69,6 +74,7 @@ function LoadedImg({
         alt={alt}
         className={className}
         loading="lazy"
+        decoding="async"
         onLoad={() => setLoaded(true)}
         onError={() => setLoaded(true)}
       />
@@ -151,6 +157,7 @@ export default function Home() {
   // newer local state (optimistic insert / delete)
   const historySeqRef = useRef(0);
   const prevStatusRef = useRef<Map<string, JobStatus>>(new Map());
+  const urlIssuedAtRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     try {
@@ -196,11 +203,29 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not load history.");
       if (seq !== historySeqRef.current) return; // superseded by a newer change
-      const items: HistoryItem[] = data.items;
-      setHistory(items);
+      const fresh: HistoryItem[] = data.items;
+      const now = Date.now();
+      setHistory((prev) => {
+        const prevById = new Map(prev.map((h) => [h.id, h]));
+        return fresh.map((it) => {
+          const old = prevById.get(it.id);
+          const issued = urlIssuedAtRef.current.get(it.id) ?? 0;
+          if (
+            old &&
+            old.status === it.status &&
+            old.url &&
+            now - issued < URL_REUSE_MS
+          ) {
+            // keep the image URLs stable so nothing re-downloads
+            return { ...it, url: old.url, thumbUrl: old.thumbUrl, inputUrls: old.inputUrls };
+          }
+          urlIssuedAtRef.current.set(it.id, now);
+          return it;
+        });
+      });
       setHistoryError(null);
       // surface failures of jobs started from this browser
-      for (const it of items) {
+      for (const it of fresh) {
         if (
           myIdsRef.current.includes(it.id) &&
           prevStatusRef.current.get(it.id) === "pending" &&
@@ -209,7 +234,7 @@ export default function Home() {
           setError(it.error || "Generation failed.");
         }
       }
-      prevStatusRef.current = new Map(items.map((i) => [i.id, i.status]));
+      prevStatusRef.current = new Map(fresh.map((i) => [i.id, i.status]));
     } catch (err: any) {
       if (seq !== historySeqRef.current) return;
       setHistoryError(err.message || "Could not load history.");
@@ -638,7 +663,7 @@ export default function Home() {
                       setSelected(item);
                     }}
                   >
-                    <LoadedImg src={item.url} alt={item.prompt} />
+                    <LoadedImg src={item.thumbUrl ?? item.url} alt={item.prompt} />
                   </a>
                 ) : item.status === "pending" ? (
                   <div className="history-thumb history-pending">

@@ -16,14 +16,44 @@ export const s3 = new S3Client({
 const APP_PREFIX = "nano-banana/";
 const RESULTS_FOLDER = `${APP_PREFIX}results`;
 const INPUTS_FOLDER = `${APP_PREFIX}inputs`;
+const THUMBS_FOLDER = `${APP_PREFIX}thumbs`;
 
 async function upload(folder: string, buffer: Buffer, contentType: string): Promise<string> {
   const ext = contentType.split("/")[1] || "bin";
   const key = `${folder}/${uuidv4()}.${ext}`;
   await s3.send(
-    new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: buffer, ContentType: contentType })
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      // keys are random and never rewritten, so browsers may cache forever
+      CacheControl: "public, max-age=31536000, immutable",
+    })
   );
   return key;
+}
+
+// Small JPEG used by the history grid so the page never has to download
+// thirty full-size 4K results just to draw thumbnails.
+export const THUMB_WIDTH = 640;
+
+export async function makeThumbnail(buffer: Buffer): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  return sharp(buffer)
+    .rotate()
+    .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+    .jpeg({ quality: 78, mozjpeg: true })
+    .toBuffer();
+}
+
+export function uploadThumbImage(buffer: Buffer): Promise<string> {
+  return upload(THUMBS_FOLDER, buffer, "image/jpeg");
+}
+
+export async function getObjectBuffer(key: string): Promise<Buffer> {
+  const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  return Buffer.from(await obj.Body!.transformToByteArray());
 }
 
 export function uploadResultImage(buffer: Buffer, contentType: string): Promise<string> {
