@@ -38,6 +38,7 @@ const POLL_MS = 3000;
 // which would change every <img src> and make the browser re-download all
 // the images on each poll — so URLs younger than this are kept as-is.
 const URL_REUSE_MS = 40 * 60 * 1000;
+const PAGE_SIZE = 30;
 const MODEL_INFO: Record<ModelKey, { label: string; blurb: string }> = {
   "nano-banana-pro": {
     label: "Nano Banana Pro",
@@ -153,6 +154,17 @@ export default function Home() {
   const [selected, setSelected] = useState<HistoryItem | null>(null);
   const [myIds, setMyIds] = useState<string[]>([]);
   const myIdsRef = useRef<string[]>([]);
+  // "View all history": the first page is always loaded; older pages are
+  // appended as the user scrolls (or presses Load more)
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const expandedRef = useRef(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
+  const historyRef = useRef<HistoryItem[]>([]);
+  const historyTopRef = useRef<HTMLElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   // monotonic counter so a slow /api/history response can't overwrite
   // newer local state (optimistic insert / delete)
   const historySeqRef = useRef(0);
@@ -205,9 +217,10 @@ export default function Home() {
       if (seq !== historySeqRef.current) return; // superseded by a newer change
       const fresh: HistoryItem[] = data.items;
       const now = Date.now();
+      setTotal(data.total ?? fresh.length);
       setHistory((prev) => {
         const prevById = new Map(prev.map((h) => [h.id, h]));
-        return fresh.map((it) => {
+        const head = fresh.map((it) => {
           const old = prevById.get(it.id);
           const issued = urlIssuedAtRef.current.get(it.id) ?? 0;
           if (
@@ -222,6 +235,19 @@ export default function Home() {
           urlIssuedAtRef.current.set(it.id, now);
           return it;
         });
+        if (!expandedRef.current) {
+          setHasMore(!!data.hasMore);
+          return head;
+        }
+        // expanded: keep the older pages that were already scrolled in
+        const headIds = new Set(head.map((h) => h.id));
+        const lastHead = head[head.length - 1];
+        const cut = lastHead ? prev.findIndex((h) => h.id === lastHead.id) : -1;
+        const tail = (cut >= 0 ? prev.slice(cut + 1) : prev).filter(
+          (h) => !headIds.has(h.id)
+        );
+        if (tail.length === 0) setHasMore(!!data.hasMore);
+        return [...head, ...tail];
       });
       setHistoryError(null);
       // surface failures of jobs started from this browser
@@ -286,6 +312,71 @@ export default function Home() {
       loadHistory();
     }
   };
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  // Next page of older cards, after the last one currently loaded
+  const loadMore = useCallback(async () => {
+    if (loadingMoreRef.current) return;
+    const last = historyRef.current[historyRef.current.length - 1];
+    if (!last) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const res = await fetch(
+        `/api/history?cursor=${encodeURIComponent(last.id)}&limit=${PAGE_SIZE}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load more history.");
+      const now = Date.now();
+      const older: HistoryItem[] = data.items;
+      setTotal(data.total ?? total);
+      setHasMore(!!data.hasMore);
+      setHistory((prev) => {
+        const seen = new Set(prev.map((h) => h.id));
+        const add = older.filter((h) => !seen.has(h.id));
+        add.forEach((h) => urlIssuedAtRef.current.set(h.id, now));
+        return [...prev, ...add];
+      });
+    } catch (err: any) {
+      setHistoryError(err.message || "Could not load more history.");
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  }, [total]);
+
+  const viewAll = () => {
+    expandedRef.current = true;
+    setExpanded(true);
+    loadMore();
+  };
+
+  const showLess = () => {
+    expandedRef.current = false;
+    setExpanded(false);
+    setHistory((prev) => prev.slice(0, PAGE_SIZE));
+    setHasMore(total > PAGE_SIZE);
+    historyTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Infinite scroll: fetch the next page when the sentinel below the grid
+  // comes near the viewport.
+  useEffect(() => {
+    if (!expanded || !hasMore || loadingMore) return;
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMore();
+      },
+      { rootMargin: "800px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [expanded, hasMore, loadingMore, loadMore]);
 
   // Everything this browser started, newest first (history is already sorted)
   const mine = history.filter((h) => myIds.includes(h.id));
@@ -632,9 +723,16 @@ export default function Home() {
         </section>
       </div>
 
-      <section className="panel history-panel">
+      <section className="panel history-panel" ref={historyTopRef}>
         <div className="history-head">
-          <div className="panel-label">History</div>
+          <div className="panel-label">
+            History
+            {total > 0 && (
+              <span className="history-count">
+                {expanded ? `${history.length} of ${total}` : `${total} total`}
+              </span>
+            )}
+          </div>
           <button className="history-refresh" onClick={loadHistory} title="Refresh">
             ↻ Refresh
           </button>
@@ -733,6 +831,44 @@ export default function Home() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="history-footer">
+            {!expanded && hasMore && (
+              <button className="history-more" onClick={viewAll}>
+                View all history ({total} generations since day one)
+              </button>
+            )}
+            {expanded && (
+              <>
+                <div ref={sentinelRef} className="history-sentinel" />
+                {hasMore ? (
+                  <button
+                    className="history-more"
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? (
+                      <>
+                        <span className="mini-spinner" /> Loading older…
+                      </>
+                    ) : (
+                      `Load more (${history.length} of ${total})`
+                    )}
+                  </button>
+                ) : (
+                  <p className="history-end">
+                    That's everything — {history.length} generation
+                    {history.length === 1 ? "" : "s"} since day one.
+                  </p>
+                )}
+                <button className="history-less" onClick={showLess}>
+                  Show less
+                </button>
+              </>
+            )}
           </div>
         )}
       </section>

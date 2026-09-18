@@ -8,8 +8,22 @@ export const dynamic = "force-dynamic";
 // Anything still pending well past that was killed mid-flight.
 const STALE_AFTER = "6 minutes";
 
-export async function GET() {
+const PAGE_SIZE = 30;
+const MAX_PAGE_SIZE = 60;
+
+// GET /api/history            -> newest page
+// GET /api/history?cursor=<id> -> the page after that item (keyset paging on
+//                                 createdAt+id, so new rows arriving at the
+//                                 top never shift older pages)
+export async function GET(req: NextRequest) {
   try {
+    const params = req.nextUrl.searchParams;
+    const cursor = params.get("cursor");
+    const limit = Math.min(
+      MAX_PAGE_SIZE,
+      Math.max(1, Number(params.get("limit")) || PAGE_SIZE)
+    );
+
     await db.query(
       `UPDATE "NanoBananaHistory"
           SET "status" = 'failed',
@@ -18,13 +32,33 @@ export async function GET() {
           AND "createdAt" < now() - interval '${STALE_AFTER}'`
     );
 
-    const { rows } = await db.query(
-      `SELECT "id", "prompt", "model", "imageKey", "thumbKey", "mimeType", "inputImageCount",
-              "inputImageKeys", "resolution", "createdAt", "status", "error"
-       FROM "NanoBananaHistory"
-       ORDER BY "createdAt" DESC
-       LIMIT 30`
+    // one extra row tells us whether another page exists
+    const { rows: page } = cursor
+      ? await db.query(
+          `SELECT "id", "prompt", "model", "imageKey", "thumbKey", "mimeType", "inputImageCount",
+                  "inputImageKeys", "resolution", "createdAt", "status", "error"
+           FROM "NanoBananaHistory"
+           WHERE ("createdAt", "id") < (
+             SELECT "createdAt", "id" FROM "NanoBananaHistory" WHERE "id" = $1
+           )
+           ORDER BY "createdAt" DESC, "id" DESC
+           LIMIT $2`,
+          [cursor, limit + 1]
+        )
+      : await db.query(
+          `SELECT "id", "prompt", "model", "imageKey", "thumbKey", "mimeType", "inputImageCount",
+                  "inputImageKeys", "resolution", "createdAt", "status", "error"
+           FROM "NanoBananaHistory"
+           ORDER BY "createdAt" DESC, "id" DESC
+           LIMIT $1`,
+          [limit + 1]
+        );
+    const hasMore = page.length > limit;
+    const rows = hasMore ? page.slice(0, limit) : page;
+    const { rows: countRows } = await db.query(
+      `SELECT COUNT(*)::int AS "total" FROM "NanoBananaHistory"`
     );
+
     const items = await Promise.all(
       rows.map(async (r) => ({
         id: r.id,
@@ -48,7 +82,7 @@ export async function GET() {
         ),
       }))
     );
-    return NextResponse.json({ items });
+    return NextResponse.json({ items, hasMore, total: countRows[0]?.total ?? items.length });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Could not load history." }, { status: 500 });
   }
