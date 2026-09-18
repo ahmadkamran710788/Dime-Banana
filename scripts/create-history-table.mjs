@@ -6,7 +6,7 @@ import pg from "pg";
 
 // Load .env.local (no dotenv dependency needed)
 for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8").split("\n")) {
-  const m = line.match(/^([A-Z_]+)=(.*)$/);
+  const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, "");
 }
 
@@ -38,6 +38,8 @@ ALTER TABLE "NanoBananaHistory"
   ADD COLUMN IF NOT EXISTS "error" TEXT;
 ALTER TABLE "NanoBananaHistory"
   ALTER COLUMN "imageKey" DROP NOT NULL;
+ALTER TABLE "NanoBananaHistory"
+  ADD COLUMN IF NOT EXISTS "thumbKey" TEXT;
 CREATE INDEX IF NOT EXISTS "NanoBananaHistory_pending_idx"
   ON "NanoBananaHistory"("createdAt") WHERE "status" = 'pending';
 `;

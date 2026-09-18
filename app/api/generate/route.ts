@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { db } from "@/lib/db";
-import { uploadResultImage, uploadInputImage, deleteImage } from "@/lib/s3";
+import {
+  uploadResultImage,
+  uploadInputImage,
+  uploadThumbImage,
+  makeThumbnail,
+  deleteImage,
+} from "@/lib/s3";
 
 // Covers the ~1s response AND the background job scheduled with after().
 // On Vercel this needs Fluid Compute (default for new projects).
@@ -142,18 +148,31 @@ async function runGeneration(job: Job) {
       return;
     }
 
-    const key = await uploadResultImage(Buffer.from(result.image!, "base64"), result.mimeType!);
+    const bytes = Buffer.from(result.image!, "base64");
+    const [key, thumbKey] = await Promise.all([
+      uploadResultImage(bytes, result.mimeType!),
+      // A missing thumbnail must never fail the job — the grid falls back to
+      // the full image for that one card.
+      makeThumbnail(bytes)
+        .then(uploadThumbImage)
+        .catch((e) => {
+          console.error(`job ${id}: thumbnail failed:`, e);
+          return null;
+        }),
+    ]);
     const { rowCount } = await db.query(
       `UPDATE "NanoBananaHistory"
-          SET "status" = 'done', "imageKey" = $2, "mimeType" = $3, "error" = NULL
+          SET "status" = 'done', "imageKey" = $2, "mimeType" = $3, "thumbKey" = $4, "error" = NULL
         WHERE "id" = $1`,
-      [id, key, result.mimeType]
+      [id, key, result.mimeType, thumbKey]
     );
     if (rowCount === 0) {
       // The user deleted the pending entry while it was generating — don't
-      // leave an orphaned object in S3.
-      console.log(`job ${id}: row was deleted mid-generation, removing result object`);
-      await deleteImage(key).catch((e) => console.error("s3 cleanup failed:", e));
+      // leave orphaned objects in S3.
+      console.log(`job ${id}: row was deleted mid-generation, removing result objects`);
+      for (const k of [key, thumbKey]) {
+        if (k) await deleteImage(k).catch((e) => console.error("s3 cleanup failed:", e));
+      }
     }
   } catch (err: any) {
     console.error(`job ${id} failed:`, err);

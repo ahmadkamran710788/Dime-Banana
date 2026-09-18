@@ -19,7 +19,7 @@ export async function GET() {
     );
 
     const { rows } = await db.query(
-      `SELECT "id", "prompt", "model", "imageKey", "mimeType", "inputImageCount",
+      `SELECT "id", "prompt", "model", "imageKey", "thumbKey", "mimeType", "inputImageCount",
               "inputImageKeys", "resolution", "createdAt", "status", "error"
        FROM "NanoBananaHistory"
        ORDER BY "createdAt" DESC
@@ -37,6 +37,12 @@ export async function GET() {
         status: r.status ?? "done",
         error: r.error ?? null,
         url: r.imageKey ? await imageUrl(r.imageKey) : null,
+        // older rows have no thumbnail yet — fall back to the full image
+        thumbUrl: r.thumbKey
+          ? await imageUrl(r.thumbKey)
+          : r.imageKey
+            ? await imageUrl(r.imageKey)
+            : null,
         inputUrls: await Promise.all(
           (r.inputImageKeys ?? []).map((k: string) => imageUrl(k))
         ),
@@ -54,11 +60,14 @@ export async function DELETE(req: NextRequest) {
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
     const { rows } = await db.query(
-      `DELETE FROM "NanoBananaHistory" WHERE "id" = $1 RETURNING "imageKey", "inputImageKeys"`,
+      `DELETE FROM "NanoBananaHistory" WHERE "id" = $1
+       RETURNING "imageKey", "thumbKey", "inputImageKeys"`,
       [id]
     );
     if (rows[0]) {
-      const keys = [rows[0].imageKey, ...(rows[0].inputImageKeys ?? [])].filter(Boolean);
+      const keys = [rows[0].imageKey, rows[0].thumbKey, ...(rows[0].inputImageKeys ?? [])].filter(
+        Boolean
+      );
       for (const key of keys) {
         try {
           await deleteImage(key);
