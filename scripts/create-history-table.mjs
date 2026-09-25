@@ -40,6 +40,8 @@ ALTER TABLE "NanoBananaHistory"
   ALTER COLUMN "imageKey" DROP NOT NULL;
 ALTER TABLE "NanoBananaHistory"
   ADD COLUMN IF NOT EXISTS "thumbKey" TEXT;
+ALTER TABLE "NanoBananaHistory"
+  ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP(3);
 CREATE INDEX IF NOT EXISTS "NanoBananaHistory_pending_idx"
   ON "NanoBananaHistory"("createdAt") WHERE "status" = 'pending';
 `;

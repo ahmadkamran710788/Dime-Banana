@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
           SET "status" = 'failed',
               "error" = 'Timed out — the server stopped before this generation finished.'
         WHERE "status" = 'pending'
-          AND "createdAt" < now() - interval '${STALE_AFTER}'`
+          AND COALESCE("startedAt", "createdAt") < now() - interval '${STALE_AFTER}'`
     );
 
     // one extra row tells us whether another page exists
