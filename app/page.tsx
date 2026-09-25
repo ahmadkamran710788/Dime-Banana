@@ -383,6 +383,37 @@ export default function Home() {
   const pendingMine = mine.filter((h) => h.status === "pending");
   const latestDone = mine.find((h) => h.status === "done") ?? null;
 
+  // Re-run a failed job on the server with its stored prompt and inputs
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  const retryHistoryItem = async (item: HistoryItem) => {
+    if (retrying.has(item.id)) return;
+    setRetrying((prev) => new Set(prev).add(item.id));
+    setError(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ retryId: item.id }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `Retry failed (HTTP ${res.status}).`);
+      const fresh: HistoryItem = data.item;
+      historySeqRef.current++;
+      setHistory((prev) => prev.map((h) => (h.id === fresh.id ? { ...h, ...fresh } : h)));
+      prevStatusRef.current.set(fresh.id, "pending");
+      rememberIds((prev) => [fresh.id, ...prev.filter((x) => x !== fresh.id)]);
+      loadHistory();
+    } catch (err: any) {
+      setError(err.message || "Could not retry.");
+    } finally {
+      setRetrying((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  };
+
   const reuseHistoryItem = (item: HistoryItem) => {
     setPrompt(item.prompt);
     if (item.model in MODEL_INFO) setModel(item.model as ModelKey);
@@ -805,6 +836,16 @@ export default function Home() {
                     )}
                   </div>
                   <div className="history-actions">
+                    {item.status === "failed" && (
+                      <button
+                        className="retry"
+                        onClick={() => retryHistoryItem(item)}
+                        disabled={retrying.has(item.id)}
+                        title="Run this generation again with the same prompt and images"
+                      >
+                        {retrying.has(item.id) ? "…" : "↻ Retry"}
+                      </button>
+                    )}
                     <button onClick={() => reuseHistoryItem(item)}>
                       ↩ Reuse
                     </button>

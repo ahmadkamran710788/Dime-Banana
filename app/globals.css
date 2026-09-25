@@ -652,6 +652,17 @@ textarea:focus {
   color: var(--danger);
 }
 
+.history-actions .retry {
+  color: #1a1200;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+
+.history-actions .retry:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 /* ---------- resolution switch ---------- */
 .res-switch {
   display: flex;

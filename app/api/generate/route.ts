@@ -6,6 +6,7 @@ import {
   uploadThumbImage,
   makeThumbnail,
   deleteImage,
+  getObjectBuffer,
 } from "@/lib/s3";
 
 // Covers the ~1s response AND the background job scheduled with after().
@@ -19,14 +20,92 @@ const GEMINI_MODELS: Record<string, string> = {
   "nano-banana-2": "gemini-3.1-flash-image",
 };
 
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [2500, 7000];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Copy of a provider response with the base64 image bytes removed, for logs.
+function stripped(data: any) {
+  return JSON.stringify(data, (k, v) =>
+    typeof v === "string" && v.length > 200 ? `<${v.length} chars>` : v
+  ).slice(0, 2000);
+}
+
+type ProviderResult =
+  | { image: string; mimeType: string }
+  | { error: string; status?: number; retryable: boolean };
+
+// Gemini finish reasons that mean "content policy" — retrying won't help.
+const GEMINI_BLOCK_REASONS: Record<string, string> = {
+  SAFETY: "safety filter",
+  IMAGE_SAFETY: "image safety filter",
+  PROHIBITED_CONTENT: "prohibited content",
+  IMAGE_PROHIBITED_CONTENT: "prohibited content",
+  SPII: "sensitive personal information",
+  BLOCKLIST: "blocked terms",
+  RECITATION: "recitation check",
+  IMAGE_RECITATION: "recitation check",
+};
+
+const PEOPLE_HINT =
+  "Gemini often declines images of real people, especially children. Try GPT Image 2, different reference photos, or a rephrased prompt.";
+
+function inspectGeminiResponse(data: any): ProviderResult {
+  const block = data?.promptFeedback?.blockReason;
+  if (block) {
+    return {
+      error: `Gemini blocked the prompt (${block}). ${PEOPLE_HINT}`,
+      status: 422,
+      retryable: false,
+    };
+  }
+  const cand = data?.candidates?.[0];
+  const parts: any[] = cand?.content?.parts ?? [];
+  const imagePart = parts.find((p) => p.inlineData?.data);
+  if (imagePart) {
+    return {
+      image: imagePart.inlineData.data,
+      mimeType: imagePart.inlineData.mimeType || "image/png",
+    };
+  }
+  // Gemini explains refusals in finishMessage when the candidate has no parts
+  const text: string | undefined = (
+    parts.find((p) => typeof p.text === "string" && !p.thought)?.text ??
+    (typeof cand?.finishMessage === "string" ? cand.finishMessage : undefined)
+  )
+    ?.trim()
+    .slice(0, 400);
+  const reason: string | undefined = cand?.finishReason;
+  if (reason && GEMINI_BLOCK_REASONS[reason]) {
+    return {
+      error: `Gemini refused this image (${GEMINI_BLOCK_REASONS[reason]}${
+        text ? `: ${text}` : ""
+      }). ${PEOPLE_HINT}`,
+      status: 422,
+      retryable: false,
+    };
+  }
+  if (text) {
+    // The model answered in prose instead of drawing — usually a polite refusal.
+    return { error: `The model replied with text instead of an image: ${text}`, status: 502, retryable: false };
+  }
+  // STOP / OTHER / IMAGE_OTHER / NO_IMAGE / missing: an intermittent empty
+  // response — the same request typically succeeds on the next attempt.
+  return {
+    error: `The model returned no image (${reason ?? "no finish reason"}).`,
+    status: 502,
+    retryable: true,
+  };
+}
+
 async function generateGemini(
   modelId: string,
   prompt: string,
   images: ImageInput[],
   resolution: string
-) {
+): Promise<ProviderResult> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return { error: "Server is missing GEMINI_API_KEY.", status: 500 };
+  if (!apiKey) return { error: "Server is missing GEMINI_API_KEY.", status: 500, retryable: false };
 
   const parts: object[] = images.map((img) => ({
     inline_data: { mime_type: img.mimeType, data: img.data },
@@ -37,27 +116,38 @@ async function generateGemini(
   if (resolution === "2K" || resolution === "4K") {
     body.generationConfig = { imageConfig: { imageSize: resolution } };
   }
+  const payload = JSON.stringify(body);
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+  let last: ProviderResult = { error: "Generation failed.", retryable: true };
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }
+    );
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      last = {
+        error: data?.error?.message || `Generation failed (HTTP ${res.status}).`,
+        status: res.status,
+        // overloaded / rate limited / transient server errors are worth another go
+        retryable: res.status === 429 || res.status >= 500,
+      };
+    } else {
+      last = inspectGeminiResponse(data);
     }
-  );
-  const data = await res.json();
-  if (!res.ok) return { error: data?.error?.message || "Generation failed.", status: res.status };
 
-  const outParts = data?.candidates?.[0]?.content?.parts ?? [];
-  const imagePart = outParts.find((p: any) => p.inlineData?.data);
-  const textPart = outParts.find((p: any) => typeof p.text === "string");
-  if (!imagePart) return { error: textPart?.text || "The model returned no image.", status: 502 };
-
-  return {
-    image: imagePart.inlineData.data,
-    mimeType: imagePart.inlineData.mimeType || "image/png",
-  };
+    if (!("error" in last)) return last;
+    console.warn(
+      `gemini ${modelId} attempt ${attempt}/${MAX_ATTEMPTS} failed: ${last.error} | response: ${stripped(data)}`
+    );
+    if (!last.retryable || attempt === MAX_ATTEMPTS) break;
+    await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 5000);
+  }
+  if ("error" in last && last.retryable) {
+    last = { ...last, error: `${last.error} Tried ${MAX_ATTEMPTS} times — please retry.` };
+  }
+  return last;
 }
 
 // gpt-image-2 takes explicit WIDTHxHEIGHT (longest edge ≤ 3840, ~8.3MP budget),
@@ -67,11 +157,40 @@ const OPENAI_SIZES: Record<string, string> = {
   "4K": "3840x2160",
 };
 
-async function generateOpenAI(prompt: string, images: ImageInput[], resolution: string) {
+async function generateOpenAI(
+  prompt: string,
+  images: ImageInput[],
+  resolution: string
+): Promise<ProviderResult> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { error: "Server is missing OPENAI_API_KEY.", status: 500 };
+  if (!apiKey) return { error: "Server is missing OPENAI_API_KEY.", status: 500, retryable: false };
 
   const size = OPENAI_SIZES[resolution] ?? "auto";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await requestOpenAI(apiKey, prompt, images, size);
+    const data = await res.json().catch(() => null);
+    if (res.ok) {
+      const b64 = data?.data?.[0]?.b64_json;
+      if (b64) return { image: b64, mimeType: "image/jpeg" };
+      return { error: "The model returned no image.", status: 502, retryable: false };
+    }
+    const retryable = res.status === 429 || res.status >= 500;
+    const error = data?.error?.message || `Generation failed (HTTP ${res.status}).`;
+    console.warn(`openai attempt ${attempt}/${MAX_ATTEMPTS} failed: HTTP ${res.status} ${error}`);
+    if (!retryable || attempt === MAX_ATTEMPTS) {
+      return { error, status: res.status, retryable };
+    }
+    await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 5000);
+  }
+  return { error: "Generation failed.", status: 502, retryable: true };
+}
+
+async function requestOpenAI(
+  apiKey: string,
+  prompt: string,
+  images: ImageInput[],
+  size: string
+): Promise<Response> {
   let res: Response;
   if (images.length === 0) {
     res = await fetch("https://api.openai.com/v1/images/generations", {
@@ -104,13 +223,7 @@ async function generateOpenAI(prompt: string, images: ImageInput[], resolution: 
       body: form,
     });
   }
-
-  const data = await res.json();
-  if (!res.ok) return { error: data?.error?.message || "Generation failed.", status: res.status };
-
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) return { error: "The model returned no image.", status: 502 };
-  return { image: b64, mimeType: "image/jpeg" };
+  return res;
 }
 
 type Job = {
@@ -143,14 +256,14 @@ async function runGeneration(job: Job) {
         ? await generateOpenAI(prompt, images, resolution)
         : await generateGemini(GEMINI_MODELS[model], prompt, images, resolution);
 
-    if ("error" in result && result.error) {
+    if ("error" in result) {
       await markFailed(id, result.error);
       return;
     }
 
-    const bytes = Buffer.from(result.image!, "base64");
+    const bytes = Buffer.from(result.image, "base64");
     const [key, thumbKey] = await Promise.all([
-      uploadResultImage(bytes, result.mimeType!),
+      uploadResultImage(bytes, result.mimeType),
       // A missing thumbnail must never fail the job — the grid falls back to
       // the full image for that one card.
       makeThumbnail(bytes)
@@ -183,9 +296,71 @@ async function runGeneration(job: Job) {
 // Accepts the request, records a pending history row, and returns at once.
 // The model call itself runs in the background (after()), so it keeps going
 // if the browser reloads, and the client can start more jobs in parallel.
+const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  webp: "image/webp",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+};
+
+// Re-run a failed job in place, using the input images already stored in S3.
+async function retryJob(retryId: string) {
+  const { rows } = await db.query(
+    `UPDATE "NanoBananaHistory"
+        SET "status" = 'pending', "error" = NULL, "startedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = $1 AND "status" = 'failed'
+      RETURNING "id", "prompt", "model", "resolution", "inputImageKeys", "inputImageCount", "createdAt"`,
+    [retryId]
+  );
+  const row = rows[0];
+  if (!row) {
+    return NextResponse.json({ error: "Only failed generations can be retried." }, { status: 409 });
+  }
+  const keys: string[] = row.inputImageKeys ?? [];
+  let images: ImageInput[];
+  try {
+    images = await Promise.all(
+      keys.map(async (key) => ({
+        data: (await getObjectBuffer(key)).toString("base64"),
+        mimeType: MIME_BY_EXT[key.split(".").pop() ?? ""] ?? "image/jpeg",
+      }))
+    );
+  } catch (err: any) {
+    await markFailed(row.id, `Could not load the stored input images: ${err?.message}`);
+    return NextResponse.json({ error: "Could not load the stored input images." }, { status: 500 });
+  }
+  const resolution =
+    row.resolution === "2K" || row.resolution === "4K" ? row.resolution : "1K";
+  after(() =>
+    runGeneration({ id: row.id, prompt: row.prompt, model: row.model, images, resolution })
+  );
+  return NextResponse.json(
+    {
+      item: {
+        id: row.id,
+        prompt: row.prompt,
+        model: row.model,
+        mimeType: "image/jpeg",
+        inputImageCount: row.inputImageCount,
+        resolution,
+        createdAt: row.createdAt,
+        status: "pending",
+        error: null,
+        url: null,
+        thumbUrl: null,
+        inputUrls: [],
+      },
+    },
+    { status: 202 }
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, model, images, resolution } = await req.json();
+    const { prompt, model, images, resolution, retryId } = await req.json();
+
+    if (retryId && typeof retryId === "string") return retryJob(retryId);
 
     if (!prompt || typeof prompt !== "string") {
       return NextResponse.json({ error: "A prompt is required." }, { status: 400 });
@@ -214,8 +389,8 @@ export async function POST(req: NextRequest) {
 
     const { rows } = await db.query(
       `INSERT INTO "NanoBananaHistory"
-         ("prompt", "model", "inputImageCount", "inputImageKeys", "resolution", "status")
-       VALUES ($1, $2, $3, $4, $5, 'pending')
+         ("prompt", "model", "inputImageCount", "inputImageKeys", "resolution", "status", "startedAt")
+       VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP)
        RETURNING "id", "createdAt"`,
       [prompt, model, imageList.length, inputKeys, effectiveResolution]
     );
@@ -238,6 +413,7 @@ export async function POST(req: NextRequest) {
           status: "pending",
           error: null,
           url: null,
+          thumbUrl: null,
           inputUrls: [],
         },
       },
